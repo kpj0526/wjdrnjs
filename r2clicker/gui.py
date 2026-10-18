@@ -8,7 +8,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -17,7 +17,7 @@ from PIL import Image, ImageTk
 
 from .candidates import ORDERS, build_candidates
 from . import __version__
-from .capture import CaptureError, Grabber
+from .capture import BACKENDS, CaptureError, Grabber
 from .config import Settings
 from .engine import Bot
 from .geometry import Mapping, WindowNotFound, enable_dpi_awareness, resolve_mapping
@@ -32,6 +32,7 @@ PREVIEW_W = 800
 FORM = [
     ("Window / coordinates", None, None),
     ("window_title", "Game window title contains", "str"),
+    ("capture_backend", "Capture backend", "choice:" + "|".join(BACKENDS)),
     ("roi", "Search ROI x1,y1,x2,y2", "tuple"),
     ("Candidates", None, None),
     ("grid_step", "Grid step (px)", "int"),
@@ -107,7 +108,7 @@ class App:
         root.title(f"R2 target helper {__version__}")
         self.settings_file = settings_path()
         self.settings = Settings.load(self.settings_file)
-        self.grabber = Grabber()
+        self.grabber = Grabber(self.settings.capture_backend)
         self.vars: dict[str, tuple[tk.Variable, str]] = {}
         self.frame: np.ndarray | None = None
         self.frame_mapping: Mapping | None = None
@@ -123,6 +124,7 @@ class App:
         log.info("settings file: %s", self.settings_file)
         self._load_initial_frame()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._exclude_self_from_capture()
         self.root.after(100, self._poll)
 
     # ---------- layout ----------
@@ -214,6 +216,19 @@ class App:
         log.setLevel(logging.INFO)
         log.propagate = False
 
+    def _exclude_self_from_capture(self):
+        """Keep this window out of every screenshot (no hiding, so focus and Stop are unaffected)."""
+        self.root.update_idletasks()
+        try:
+            hwnd = int(self.root.wm_frame(), 16)
+        except (tk.TclError, ValueError):
+            return
+        if self.grabber.exclude_window(hwnd):
+            log.info("helper window is excluded from screen capture")
+        else:
+            log.warning("this Windows version cannot exclude the helper from screen capture; "
+                        "screen-backend captures fail while it overlaps the game")
+
     # ---------- settings ----------
     def read_form(self) -> Settings | None:
         s = Settings.from_dict({f.name: getattr(self.settings, f.name) for f in fields(Settings)})
@@ -233,16 +248,24 @@ class App:
             return None
         return s
 
-    def apply(self):
+    def _commit_form(self) -> Settings | None:
+        """Read the form as typed (no Enter/Apply needed), validate, and make it current.
+
+        Every action button goes through this, so it always uses what is on screen.
+        On invalid input the error is shown, self.settings is left unchanged and None is returned.
+        """
         s = self.read_form()
         if s:
             self.settings = s
+        return s
+
+    def apply(self):
+        if self._commit_form():
             self.redraw()
 
     def save(self):
-        s = self.read_form()
+        s = self._commit_form()
         if s:
-            self.settings = s
             try:
                 s.save(self.settings_file)
                 log.info("settings saved to %s", self.settings_file)
@@ -271,15 +294,22 @@ class App:
         self.redraw()
 
     def capture_preview(self):
+        s = self._commit_form()
+        if not s:
+            return
+        self.grabber.backend = s.capture_backend
         try:
-            m, desc = resolve_mapping(self.settings.window_title, self.settings.ref_w, self.settings.ref_h)
+            m, desc = resolve_mapping(s.window_title, s.ref_w, s.ref_h)
             frame = self.grabber.grab(m)
+            desc += f" [{self.grabber.last_backend} capture]"
         except (WindowNotFound, CaptureError) as e:
             messagebox.showerror("Capture failed", str(e))
             return
         self._set_frame(frame, desc, Mapping(0, 0, m.width, m.height, m.ref_w, m.ref_h))
 
     def load_image(self):
+        if not self._commit_form():
+            return
         p = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.bmp"), ("All", "*.*")])
         if p:
             try:
@@ -290,10 +320,10 @@ class App:
             self._set_frame(arr, Path(p).name)
 
     def test_verify(self):
-        s = self.read_form()
+        s = self._commit_form()
         if not s or self.frame is None:
             return
-        s.verify_mode = "absolute"  # a single image has no baseline
+        s = replace(s, verify_mode="absolute")  # a single image has no baseline
         m = self.frame_mapping
         tmpl = load_template(s.template_path, s, (m.sx + m.sy) / 2) if s.template_path else None
         res = verify(self.frame, s, m, template=tmpl)
@@ -367,10 +397,11 @@ class App:
 
     # ---------- run ----------
     def start(self):
-        s = self.read_form()
-        if not s or (self.thread and self.thread.is_alive()):
+        if self.thread and self.thread.is_alive():
             return
-        self.settings = s
+        s = self._commit_form()
+        if not s:
+            return
         if not s.dry_run:
             ok = messagebox.askyesno(
                 "Live mode",
@@ -382,6 +413,7 @@ class App:
             mouse = Win32Mouse()
         else:
             mouse = DryRunMouse()
+        self.grabber.backend = s.capture_backend
         log.info("wait after right click -> next cycle: %.3f s", s.wait_interval)
         self.bot = Bot(s, self.grabber.grab, mouse)
         self.thread = threading.Thread(target=self.bot.run, daemon=True)

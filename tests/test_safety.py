@@ -170,7 +170,7 @@ def test_live_mode_pauses_while_game_not_foreground(base_img):
     m = Mapping(game.m.left, game.m.top, 1600, 900, hwnd=1234)
     seen = []
     bot = Bot(s, game.grab, game, mapping_fn=lambda: (m, "fake"), hotkey_fn=lambda k: False,
-              foreground_fn=lambda h: seen.append(h) or focused.is_set())
+              foreground_fn=lambda h: seen.append(h) or focused.is_set(), point_fn=lambda h, x, y: True)
     t = run_in_thread(bot)
     time.sleep(0.6)
     assert not game.left_clicks and t.is_alive()  # paused, not clicking into another window
@@ -183,7 +183,7 @@ def test_focus_lost_mid_cycle_stops_clicking(base_img):
     game = LiveFake(base_img, selectable=False)
     s = fast_settings(dry_run=False, corner_failsafe=False, emergency_hotkey="F12", max_attempts=20)
     bot = Bot(s, game.grab, game, mapping_fn=lambda: (game.m, "fake"), hotkey_fn=lambda k: False,
-              foreground_fn=lambda h: len(game.left_clicks) < 2)
+              foreground_fn=lambda h: len(game.left_clicks) < 2, point_fn=lambda h, x, y: True)
     r = bot.run_cycle()
     assert r.skipped and len(game.left_clicks) == 2
 
@@ -195,3 +195,39 @@ def test_wait_interval_setting_drives_engine(base_img):
     t = game.right_click_times[0]
     wait = min(g for g in game.grab_times if g > t) - t
     assert 0.25 <= wait <= 0.45, wait
+
+
+def test_live_clicks_skip_points_covered_by_other_windows(base_img):
+    game = LiveFake(base_img)
+    s = fast_settings(dry_run=False, corner_failsafe=False, emergency_hotkey="F12")
+    covered = set()
+    asked = []
+
+    def point_fn(hwnd, x, y):
+        asked.append((x, y))
+        return (x, y) not in covered
+
+    ref_bot = make_bot(FakeGame(base_img), fast_settings())
+    first = ref_bot.run_cycle().tried[0]
+    covered.add(game.m.to_screen(*first))  # e.g. the helper window sits over the first point
+    bot = Bot(s, game.grab, game, mapping_fn=lambda: (game.m, "fake"), hotkey_fn=lambda k: False,
+              foreground_fn=lambda h: True, point_fn=point_fn)
+    r = bot.run_cycle()
+    assert game.m.to_screen(*first) not in game.left_clicks
+    assert r.success and game.right_clicks and asked
+
+
+def test_right_click_not_sent_when_its_point_is_covered(base_img):
+    game = LiveFake(base_img)
+    s = fast_settings(dry_run=False, corner_failsafe=False, emergency_hotkey="F12")
+    bot = Bot(s, game.grab, game, mapping_fn=lambda: (game.m, "fake"), hotkey_fn=lambda k: False,
+              foreground_fn=lambda h: True, point_fn=lambda h, x, y: not game.selected)
+    r = bot.run_cycle()
+    assert game.selected and not game.right_clicks and r.skipped == "right-click point covered"
+
+
+def test_dry_run_does_not_consult_click_guard(base_img):
+    game = FakeGame(base_img)
+    bot = Bot(fast_settings(), game.grab, game, mapping_fn=lambda: (game.m, "fake"),
+              point_fn=lambda h, x, y: pytest.fail("not used in dry run"))
+    assert bot.run_cycle().success

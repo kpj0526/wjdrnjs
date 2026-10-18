@@ -16,5 +16,5 @@ def test_selftest_passes_from_source(tmp_path):
                        capture_output=True, text=True, timeout=120)
     r = json.loads(out.read_text(encoding="utf-8"))
     assert p.returncode == 0 and r["passed"], r
-    assert set(r["checks"]) == {"sample", "tk", "candidates", "detect", "dry_cycle", "settings_io"}
+    assert set(r["checks"]) == {"sample", "tk_and_window_capture", "candidates", "detect", "dry_cycle", "settings_io"}
     assert not list((tmp_path / "home").glob("settings*.json"))

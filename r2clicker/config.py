@@ -33,6 +33,7 @@ class Settings:
     window_title: str = "R2"          # substring of the game window title; "" = whole primary screen
     ref_w: int = REF_W
     ref_h: int = REF_H
+    capture_backend: str = "auto"     # auto | window (PrintWindow) | screen (mss + occlusion check)
 
     # --- search area and candidate pattern ---
     roi: Rect = (350, 130, 1250, 670)
@@ -187,9 +188,13 @@ class Settings:
             v = getattr(self, name)
             if not isinstance(v, (int, float)) or isinstance(v, bool) or not (lo <= v <= hi):
                 e.append(f"{name} must be a number in [{lo}, {hi}] (got {v!r})")
-        if isinstance(self.verify_timeout, (int, float)) and isinstance(self.verify_delay, (int, float))                 and self.verify_timeout < self.verify_delay:
+        numeric = all(isinstance(v, (int, float)) for v in (self.verify_timeout, self.verify_delay))
+        if numeric and self.verify_timeout < self.verify_delay:
             e.append("verify_timeout must be >= verify_delay")
-        choices = {"order": ORDERS, "verify_mode": ("diff", "absolute"), "right_click_target": ("same", "park")}
+        from .capture import BACKENDS
+
+        choices = {"capture_backend": BACKENDS, "order": ORDERS, "verify_mode": ("diff", "absolute"),
+                   "right_click_target": ("same", "park")}
         for name, ok in choices.items():
             if getattr(self, name) not in ok:
                 e.append(f"{name} must be one of {', '.join(ok)}")

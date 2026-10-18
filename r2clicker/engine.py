@@ -20,7 +20,7 @@ from typing import Callable
 import numpy as np
 
 from .candidates import Candidate, build_candidates
-from .capture import CaptureError
+from .capture import CaptureError, point_belongs_to
 from .config import Settings
 from .geometry import Mapping, WindowNotFound, is_foreground, monitor_top_left, resolve_mapping
 from .vision import VerifyResult, load_template, verify
@@ -54,6 +54,7 @@ class Bot:
         cursor_fn: Callable[[], tuple[int, int] | None] = cursor_pos,
         corner_fn: Callable[[int, int], tuple[int, int]] = monitor_top_left,
         foreground_fn: Callable[[int], bool] = is_foreground,
+        point_fn: Callable[[int, int, int], bool] = point_belongs_to,
     ) -> None:
         self.s = settings
         self.grab = grab
@@ -67,6 +68,7 @@ class Bot:
         self.cursor_fn = cursor_fn
         self.corner_fn = corner_fn
         self.foreground_fn = foreground_fn
+        self.point_fn = point_fn
         self.stop_event = threading.Event()
         self.stop_reason = ""
         self._sleep_override = sleep
@@ -128,6 +130,10 @@ class Bot:
         except Exception as e:  # a full disk must not stop the run
             log.warning("could not save screenshot: %s", e)
 
+    def _clickable(self, m: Mapping, x: int, y: int) -> bool:
+        """Live clicks only where the game itself is visible (not under this helper or another window)."""
+        return not self.live or self.point_fn(m.hwnd, x, y)
+
     def _game_ready(self, m: Mapping) -> bool:
         """Live clicks only go to the game when it is the active window."""
         return not self.live or self.foreground_fn(m.hwnd)
@@ -161,6 +167,9 @@ class Bot:
                 continue
             if not self._game_ready(m):
                 return CycleResult(False, len(tried), None, res, tried, skipped="game window lost focus")
+            if not self._clickable(m, sx, sy):
+                log.warning("screen(%d,%d) is covered by another window; not clicked", sx, sy)
+                continue
             tried.append((c.x, c.y))
             t_click = time.perf_counter()
             self.mouse.left_click(sx, sy)
@@ -181,6 +190,9 @@ class Bot:
                 if not self._sleep(s.right_click_delay):
                     break
                 target = (sx, sy) if s.right_click_target == "same" else park
+                if not self._clickable(m, *target):
+                    log.warning("right-click point screen%s is covered by another window; not clicked", target)
+                    return CycleResult(False, i, c, res, tried, skipped="right-click point covered")
                 self.mouse.right_click(*target)
                 self.mouse.move(*park)
                 log.info("selected at ref(%d,%d); right click at screen%s", c.x, c.y, target)

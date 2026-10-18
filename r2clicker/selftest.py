@@ -1,7 +1,7 @@
 """Offline self-test, also run against the packaged exe: `R2TargetHelper.exe --selftest out.json`.
 
 It never touches the game or the real mouse. It checks:
-- bundled sample image and Tk are present
+- bundled sample image and Tk are present; PrintWindow capture and capture exclusion work
 - candidates are generated
 - the nameplate check finds a synthetic nameplate and nothing in the real screenshot
 - a dry-run cycle against a simulated screen
@@ -50,13 +50,35 @@ def run_checks() -> dict:
         assert state["img"].size == (1600, 900)
         return p.name
 
-    def tk():
+    def tk_and_window_capture():
+        """Tk works, PrintWindow reads a window's own pixels, and capture exclusion is available."""
         import tkinter
 
+        from .capture import Grabber, print_window
+
         r = tkinter.Tk()
-        r.withdraw()
-        r.update()
-        r.destroy()
+        try:
+            r.title("R2 selftest")
+            r.geometry("120x80+40+40")
+            tkinter.Canvas(r, bg="#c0c000", width=120, height=80, highlightthickness=0).pack()
+            r.update()
+            hwnd = int(r.wm_frame(), 16)
+            if sys.platform != "win32":
+                return "skipped (not Windows)"
+            client = int(r.winfo_id())  # Tk's client window inside the frame
+            w, h = r.winfo_width(), r.winfo_height()
+            img = None
+            for _ in range(20):
+                r.update()
+                img = print_window(client, w, h)
+                if img[h // 2, w // 2].tolist() == [192, 192, 0]:
+                    break
+                time.sleep(0.05)
+            assert img is not None and img[h // 2, w // 2].tolist() == [192, 192, 0], img[h // 2, w // 2]
+            excluded = Grabber().exclude_window(hwnd)
+            return f"PrintWindow ok, exclude-from-capture {'ok' if excluded else 'UNSUPPORTED'}"
+        finally:
+            r.destroy()
 
     m = Mapping(0, 0, 1600, 900)
 
@@ -93,8 +115,8 @@ def run_checks() -> dict:
         p.unlink()
         return str(data_dir())
 
-    for name, fn in [("sample", sample), ("tk", tk), ("candidates", cands), ("detect", detect),
-                     ("dry_cycle", dry_cycle), ("settings_io", settings_io)]:
+    for name, fn in [("sample", sample), ("tk_and_window_capture", tk_and_window_capture), ("candidates", cands),
+                     ("detect", detect), ("dry_cycle", dry_cycle), ("settings_io", settings_io)]:
         check(name, fn)
     return {"version": __version__, "frozen": is_frozen(), "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "checks": checks, "passed": all(v.startswith("ok") for v in checks.values())}

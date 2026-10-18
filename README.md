@@ -27,9 +27,13 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -m pytest -q tests               # offline test suite
 ```
 
-Requires Windows and Python 3.10 or newer (releases are built with 3.12).
+Requires Windows 10 or newer and Python 3.10 or newer (releases are built with 3.12). Excluding the helper from screen capture needs Windows 10 version 2004 or newer.
 
 ## Usage
+
+Every button (Capture, Load, Test check, Save, Start) uses the values as currently typed. You
+do not need to press Enter or *Apply* first. If a value is invalid, the button shows the
+problem and does nothing, and the previous valid settings stay in effect.
 
 1. Set **Game window title contains** (default `R2`). This tool's own window is never
    matched. If no window matches, or the window is minimized, capture and Start report an
@@ -66,6 +70,31 @@ Requires Windows and Python 3.10 or newer (releases are built with 3.12).
 top-left corner of the monitor it is on. This works on any monitor, including ones at
 negative coordinates. Closing the window also stops the run.
 
+## Capture: only the game's own pixels
+
+Screen pixels would also include anything lying on top of the game. That includes this
+helper's own window, which is how the preview used to show itself recursively inside the
+capture. The **Capture backend** setting controls how frames are taken:
+
+| Backend | How | When something overlaps the game |
+|---|---|---|
+| `auto` (default) | `window` first. If that returns a blank frame (retried once), falls back to `screen` and tries `window` again every 10 s. | as below |
+| `window` | `PrintWindow(PW_CLIENTONLY \| PW_RENDERFULLCONTENT)`: the game window renders its own client area into memory. | Not included. The window's own pixels come back even when covered. A blank result (some DirectX/OpenGL games and hardware-accelerated browsers) is an error, never used. |
+| `screen` | Screen pixels via mss. | Before every grab, the windows above the game are checked. If one overlaps the client area, the grab fails and names that window. |
+
+The helper's window is excluded from screen capture with
+`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` (Windows 10 2004+). It stays visible
+and focusable, and is never hidden or moved, so Stop/F12 and focus behave normally. If
+exclusion is unsupported, the log says so, and `screen` captures then fail while the helper
+overlaps the game.
+
+The preview button and the running loop share the same capture object, so both get the
+same guarantees.
+
+During a live run, each click point is checked with `WindowFromPoint` before clicking. If
+the helper or any other window covers that point, the point is skipped and logged. If the
+right-click point is covered, that cycle is abandoned without a right click.
+
 ## Safety and error handling
 
 | Situation | Behaviour |
@@ -76,6 +105,9 @@ negative coordinates. Closing the window also stops the run.
 | Game window not in the foreground (live mode) | The run pauses without clicking and resumes when the game is active again. Focus lost mid-cycle ends that cycle at once. |
 | Screenshot fails, or its size does not match the client (DPI scaling, window resized) | The run stops with a message that mentions DPI. The process is DPI-aware. |
 | Frame size changes between baseline and check | That attempt counts as not selected. |
+| Window capture blank (hardware rendering) | `window` backend: error naming the cause. `auto`: falls back to `screen` (still occlusion-checked). |
+| Another window, or the helper, overlaps the game (`screen` capture) | The capture fails and names the window, so its pixels never reach the check. |
+| A click point is covered by another window (live) | That point is not clicked. |
 | `SendInput` blocked (game running as administrator) | The run stops with "run this tool as administrator too". |
 | Any unexpected error | The run stops, the traceback is logged, and both mouse buttons are released. A button-up is always sent after a button-down. |
 | A click point would land outside the game client | It is skipped and logged. |
@@ -136,7 +168,16 @@ a hover label without markers, and its nameplate drifts. The tests cover:
   after errors, the dry-run guard
 - settings validation, load and save
 - data paths for source, portable and read-only installs
-- a headless GUI smoke test (form → settings, save, ROI drag)
+- a headless GUI smoke test (form → settings, save, ROI drag), including that every button
+  uses the values as typed without Enter/Apply
+- capture backend selection and occlusion logic (stubbed Win32 calls)
+- desktop capture tests with real windows. A patterned "game" window runs in a separate
+  process, with an external topmost window and the helper GUI over it. The tests check that:
+  - preview and run-time captures contain only the target's pixels, on all three backends
+  - `screen` capture refuses while an external window covers the target
+  - the click guard sees covering windows
+
+  These briefly show small windows; set `R2_SKIP_DESKTOP_TESTS=1` to skip them.
 - source hygiene: UTF-8 with no U+FFFD, and ASCII-only GUI strings
 
 None of the tests touch the game or the real mouse.
@@ -186,5 +227,12 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
   trade-off against skill-flash false positives).
 - Whether the game accepts `SendInput` clicks, or blocks automation, is untested; there was
   no live testing. Check that the game's terms allow this kind of tool.
+- Whether `PrintWindow` can read the R2 client is unknown until it is tried on the real game.
+  If the preview reports `[screen capture]`, the game is hardware-rendered. Keep the game
+  uncovered (the helper may overlap it; it is excluded) or the capture fails.
+- `PrintWindow` asks the game to redraw into memory on every grab. With some games that costs
+  a few ms or causes flicker; if so, choose `screen`.
+- Corpses also show a white nameplate. The detector cannot yet tell a corpse's nameplate
+  from a living mob's, and this is not addressed yet. Real alive and dead samples are needed.
 - The window title filter is a substring match. Use a distinctive part of the game's title
   so that, for example, a browser tab with "R2" in its title is not picked first.

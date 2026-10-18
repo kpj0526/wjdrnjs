@@ -89,6 +89,12 @@ class Settings:
     # --- safety ---
     emergency_hotkey: str = "F12"
     corner_failsafe: bool = True      # cursor in the top-left screen corner stops the run
+    hide_helper_from_capture: bool = True  # keep the helper out of screenshots (auto-off under Remote
+                                           # Desktop; also turn off for AnyDesk/TeamViewer/streaming,
+                                           # which otherwise show the helper as invisible/black)
+
+    # --- helper window ---
+    window_geometry: str = ""         # last window size/position "WxH+X+Y"; corrected onto a monitor at start
 
     # --- logging ---
     log_dir: str = "logs"             # relative paths are resolved against the app data folder

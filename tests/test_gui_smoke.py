@@ -192,3 +192,111 @@ def test_start_ignored_while_running(app, monkeypatch):
     gate.set()
     app.thread.join()
     app.thread = None
+
+
+# --- window placement and startup-only work ---------------------------------------------------
+
+
+def _new_app(tk_root, monkeypatch, tmp_path, **kw):
+    import tkinter as tk
+
+    from r2clicker import gui
+
+    monkeypatch.setenv("R2_HELPER_HOME", str(tmp_path))
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, msg: None)
+    top = tk.Toplevel(tk_root)
+    top.withdraw()
+    return gui.App(top, **kw)
+
+
+def test_window_opens_visible_inside_a_monitor(tk_root, tmp_path, monkeypatch):
+    from r2clicker.winplace import monitor_work_areas, parse_geometry
+
+    app = _new_app(tk_root, monkeypatch, tmp_path)  # show=True: deiconify/lift/focus
+    app.root.update()
+    try:
+        assert app.root.state() == "normal" and app.root.winfo_viewable()
+        w, h, x, y = parse_geometry(app.root.geometry())
+        areas = monitor_work_areas() or [(0, 0, app.root.winfo_screenwidth(), app.root.winfo_screenheight())]
+        assert any(l <= x and t <= y and x + w <= r and y + h <= b for l, t, r, b in areas), (app.root.geometry(), areas)
+    finally:
+        app.on_close()
+
+
+def test_offscreen_saved_position_is_corrected_and_geometry_remembered(tk_root, tmp_path, monkeypatch):
+    from r2clicker.config import Settings
+    from r2clicker.winplace import parse_geometry
+
+    Settings(window_geometry="1200x700+9000+-4000", wait_interval=4.0).save(tmp_path / "settings.json")
+    app = _new_app(tk_root, monkeypatch, tmp_path, show=False)
+    w, h, x, y = parse_geometry(app.root.geometry())
+    assert 0 <= x < app.root.winfo_screenwidth() and 0 <= y < app.root.winfo_screenheight()
+    app.vars["wait_interval"][0].set("99")  # an unsaved edit must not be written on close
+    app.root.deiconify()
+    app.root.update()
+    app.on_close()
+    s = Settings.load(tmp_path / "settings.json")
+    assert parse_geometry(s.window_geometry) and s.wait_interval == 4.0
+
+
+def test_monitor_query_and_remote_check_run_once_at_startup(tk_root, tmp_path, monkeypatch):
+    from r2clicker import gui
+    from r2clicker.geometry import Mapping
+
+    calls = {"areas": 0, "remote": 0}
+    real_areas = gui.monitor_work_areas
+    monkeypatch.setattr(gui, "monitor_work_areas", lambda: calls.__setitem__("areas", calls["areas"] + 1) or real_areas())
+    monkeypatch.setattr(gui, "is_remote_session", lambda: calls.__setitem__("remote", calls["remote"] + 1) or False)
+    app = _new_app(tk_root, monkeypatch, tmp_path, show=False)
+    assert calls == {"areas": 1, "remote": 1}
+    monkeypatch.setattr(gui, "resolve_mapping", lambda *a: (Mapping(0, 0, 1600, 900), "fake"))
+    monkeypatch.setattr(app.grabber, "grab", lambda m: app.frame.copy())
+    started = []
+    monkeypatch.setattr(gui, "Bot", lambda s, grab, mouse: started.append(1) or type(
+        "B", (), {"run": lambda self: None, "stop": lambda self, w="": None, "stop_reason": ""})())
+    for _ in range(3):
+        app.capture_preview()
+        app.test_verify()
+        app.apply()
+    app.start()
+    app.thread.join(2)
+    assert started and calls == {"areas": 1, "remote": 1}
+    app.on_close()
+
+
+def test_remote_session_keeps_helper_visible_to_capture(tk_root, tmp_path, monkeypatch):
+    from r2clicker import capture, gui
+
+    monkeypatch.setattr(gui, "is_remote_session", lambda: True)
+    monkeypatch.setattr(capture, "exclude_from_capture", lambda h: pytest.fail("must not hide under RDP"))
+    app = _new_app(tk_root, monkeypatch, tmp_path, show=False)
+    assert not app.grabber.excluded and app.grabber.own
+    app.on_close()
+
+
+def test_exclusion_follows_the_checkbox(tk_root, tmp_path, monkeypatch):
+    from r2clicker import capture, gui
+
+    monkeypatch.setattr(gui, "is_remote_session", lambda: False)
+    calls = []
+    monkeypatch.setattr(capture, "exclude_from_capture", lambda h: calls.append(("ex", h)) or True)
+    monkeypatch.setattr(capture, "include_in_capture", lambda h: calls.append(("in", h)) or True)
+    app = _new_app(tk_root, monkeypatch, tmp_path, show=False)
+    assert [c[0] for c in calls] == ["ex"]
+    app.vars["hide_helper_from_capture"][0].set(False)
+    app.apply()
+    app.apply()  # unchanged: no further Win32 call
+    assert [c[0] for c in calls] == ["ex", "in"] and not app.grabber.excluded
+    app.on_close()
+
+
+def test_startup_crash_is_written_to_a_log(tmp_path, monkeypatch):
+    from r2clicker import gui
+
+    monkeypatch.setenv("R2_HELPER_HOME", str(tmp_path))
+    shown = []
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, msg: shown.append(msg))
+    monkeypatch.setattr(gui.tk, "Tk", lambda: (_ for _ in ()).throw(RuntimeError("no Tcl")))
+    with pytest.raises(RuntimeError):
+        gui.main()
+    assert "no Tcl" in (tmp_path / "startup-error.log").read_text(encoding="utf-8")

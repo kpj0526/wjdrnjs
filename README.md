@@ -79,7 +79,7 @@ capture. The **Capture backend** setting controls how frames are taken:
 | Backend | How | When something overlaps the game |
 |---|---|---|
 | `auto` (default) | `window` first. If that returns a blank frame (retried once), falls back to `screen` and tries `window` again every 10 s. | as below |
-| `window` | `PrintWindow(PW_CLIENTONLY \| PW_RENDERFULLCONTENT)`: the game window renders its own client area into memory. | Not included. The window's own pixels come back even when covered. A blank result (some DirectX/OpenGL games and hardware-accelerated browsers) is an error, never used. |
+| `window` | `PrintWindow` (fast `PW_CLIENTONLY`, or `+PW_RENDERFULLCONTENT` when the fast mode is blank): the game window renders its own client area into memory. |\| PW_RENDERFULLCONTENT)`: the game window renders its own client area into memory. | Not included. The window's own pixels come back even when covered. A blank result (some DirectX/OpenGL games and hardware-accelerated browsers) is an error, never used. |
 | `screen` | Screen pixels via mss. | Before every grab, the windows above the game are checked. If one overlaps the client area, the grab fails and names that window. |
 
 The helper's window is excluded from screen capture with
@@ -91,9 +91,45 @@ overlaps the game.
 The preview button and the running loop share the same capture object, so both get the
 same guarantees.
 
+Windows also hides capture-excluded windows from **remote desktop and streaming tools**
+(RDP, AnyDesk, TeamViewer, Discord/OBS). Seen through one of those, the helper looks
+invisible or black even though it is running. Exclusion is therefore off automatically in
+Remote Desktop sessions (checked once at startup). For the other tools, untick **Hide this
+window from screenshots**.
+
+**Speed.** Measured on this development PC with a 1600x900 window at 60 Hz:
+
+| Step | Median |
+|---|---|
+| Window capture | **11 ms**. The fast `PrintWindow` mode (`PW_CLIENTONLY`) is used whenever it returns real content. The slower full-content mode (one display frame, ~17 ms) is used only for windows whose fast mode is blank, such as DirectX. The working mode is remembered per window, so each steady-state grab is one call. |
+| Screen capture | 17–30 ms (the old path, unchanged) |
+| Occlusion check (screen backend only) | ~0.01 ms |
+| Nameplate check | ~120 ms. This is the dominant cost and is unchanged. |
+
+A failed `PrintWindow` call is retried once, immediately. No sleeps were added to the capture
+path. Monitor enumeration, window placement and the remote-session check run once at
+startup, never in the capture loop.
+
 During a live run, each click point is checked with `WindowFromPoint` before clicking. If
 the helper or any other window covers that point, the point is skipped and logged. If the
 right-click point is covered, that cycle is abandoned without a right click.
+
+## The helper window
+
+At startup the window is fitted to the screen and brought to the front:
+- **Size:** shrunk to fit the monitor's work area. The settings column scrolls, so laptops
+  such as 1366x768 still show everything.
+- **Position:** centred on the primary monitor. If a position was saved at the last close,
+  it is reused only if the title bar is reachable on a monitor that exists now (including
+  monitors at negative coordinates); otherwise the window is centred again. The window is
+  always pulled fully inside that monitor.
+- **Bringing to front:** de-minimize, raise, briefly topmost (400 ms) and focus. Each step is
+  optional; if one fails, startup continues.
+
+Closing the window saves only its geometry (`window_geometry` in `settings.json`), never
+unsaved form edits. If startup itself fails, the error is written to `startup-error.log` in
+the data folder and shown in a message box. A windowed exe has no console, so otherwise a
+crash would look like "the process runs but no window".
 
 ## Safety and error handling
 

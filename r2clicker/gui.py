@@ -23,6 +23,7 @@ from .engine import Bot
 from .geometry import Mapping, WindowNotFound, enable_dpi_awareness, resolve_mapping
 from .paths import data_dir, resolve_in_data_dir, sample_image, settings_path
 from .vision import load_template, verify
+from .winplace import fit_geometry, is_remote_session, monitor_work_areas
 from .winput import DryRunMouse, Win32Mouse
 
 log = logging.getLogger("r2clicker")
@@ -33,6 +34,7 @@ FORM = [
     ("Window / coordinates", None, None),
     ("window_title", "Game window title contains", "str"),
     ("capture_backend", "Capture backend", "choice:" + "|".join(BACKENDS)),
+    ("hide_helper_from_capture", "Hide this window from screenshots", "bool"),
     ("roi", "Search ROI x1,y1,x2,y2", "tuple"),
     ("Candidates", None, None),
     ("grid_step", "Grid step (px)", "int"),
@@ -103,11 +105,12 @@ class QueueHandler(logging.Handler):
 
 
 class App:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, show: bool = True) -> None:
         self.root = root
         root.title(f"R2 target helper {__version__}")
         self.settings_file = settings_path()
         self.settings = Settings.load(self.settings_file)
+        self.remote_session = is_remote_session()  # checked once at startup
         self.grabber = Grabber(self.settings.capture_backend)
         self.vars: dict[str, tuple[tk.Variable, str]] = {}
         self.frame: np.ndarray | None = None
@@ -124,7 +127,10 @@ class App:
         log.info("settings file: %s", self.settings_file)
         self._load_initial_frame()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self._exclude_self_from_capture()
+        self.place_window()
+        if show:
+            self.bring_to_front()
+        self._sync_capture_exclusion()
         self.root.after(100, self._poll)
 
     # ---------- layout ----------
@@ -169,8 +175,23 @@ class App:
         self.logbox = tk.Text(left, height=12, font=("Consolas", 9), state="disabled")
         self.logbox.pack(fill="both", expand=True)
 
-        form = ttk.Frame(right)
-        form.pack(fill="y")
+        # the form scrolls, so the window still fits on small screens (e.g. 1366x768)
+        fcanvas = tk.Canvas(right, highlightthickness=0, width=1, height=1)
+        fscroll = ttk.Scrollbar(right, orient="vertical", command=fcanvas.yview)
+        fcanvas.configure(yscrollcommand=fscroll.set)
+        fscroll.pack(side="right", fill="y")
+        fcanvas.pack(side="left", fill="both", expand=True)
+        form = ttk.Frame(fcanvas)
+        fcanvas.create_window((0, 0), window=form, anchor="nw")
+
+        def fit_form(_e=None):
+            fcanvas.configure(scrollregion=fcanvas.bbox("all"), width=form.winfo_reqwidth())
+
+        form.bind("<Configure>", fit_form)
+        fcanvas.bind("<Enter>", lambda e: fcanvas.bind_all(
+            "<MouseWheel>", lambda ev: fcanvas.yview_scroll(-ev.delta // 120, "units")))
+        fcanvas.bind("<Leave>", lambda e: fcanvas.unbind_all("<MouseWheel>"))
+        self.form_canvas = fcanvas
         r = 0
         for name, label, kind in FORM:
             if label is None:
@@ -216,18 +237,90 @@ class App:
         log.setLevel(logging.INFO)
         log.propagate = False
 
-    def _exclude_self_from_capture(self):
-        """Keep this window out of every screenshot (no hiding, so focus and Stop are unaffected)."""
+    # ---------- window placement ----------
+    def _work_areas(self):
+        areas = monitor_work_areas()
+        if not areas:  # non-Windows or query failed: the Tk screen size is the best guess
+            areas = [(0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())]
+        return areas
+
+    def place_window(self):
+        """Size and position the window fully inside a monitor's work area.
+
+        A saved position is reused only if its title bar is reachable on a current monitor
+        (monitors may have been unplugged or rearranged); otherwise the window is centred on
+        the primary monitor. The size is shrunk to fit (the settings form scrolls).
+        """
+        self.root.update_idletasks()
+        req_w, req_h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+        areas = self._work_areas()
+        w, h, x, y = fit_geometry(req_w, req_h, areas, self.settings.window_geometry)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self.root.update_idletasks()
+        log.info("window %dx%d at (%d,%d); monitors: %s", w, h, x, y, areas)
+
+    def bring_to_front(self):
+        """Make sure the window is shown, not minimized, and in front. Every step is optional."""
+        for step in (self.root.deiconify, self.root.lift):
+            try:
+                step()
+            except tk.TclError as e:
+                log.warning("window %s failed: %s", step.__name__, e)
+        try:  # briefly topmost: beats focus-stealing prevention without staying on top
+            self.root.attributes("-topmost", True)
+            self.root.after(400, self._drop_topmost)
+        except tk.TclError:
+            pass
+        try:
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+
+    def _drop_topmost(self):
+        try:
+            self.root.attributes("-topmost", False)
+        except tk.TclError:
+            pass
+
+    def _remember_geometry(self):
+        """Store only the window geometry (never unsaved form edits) for the next start."""
+        try:
+            if self.root.state() != "normal":
+                return
+            geometry = self.root.geometry()
+            s = Settings.load(self.settings_file)
+            if s.load_warnings:  # never overwrite a file we could not read
+                return
+            s.window_geometry = geometry
+            s.save(self.settings_file)
+        except (tk.TclError, OSError) as e:
+            log.warning("could not remember window position: %s", e)
+
+    def _sync_capture_exclusion(self):
+        """Keep this window out of screenshots (it is never hidden, so focus and Stop are unaffected).
+
+        Off when disabled in the settings, and automatically under Remote Desktop: Windows also
+        hides capture-excluded windows from remote-desktop/streaming viewers, so there the helper
+        would look invisible.
+        """
         self.root.update_idletasks()
         try:
             hwnd = int(self.root.wm_frame(), 16)
         except (tk.TclError, ValueError):
             return
-        if self.grabber.exclude_window(hwnd):
-            log.info("helper window is excluded from screen capture")
-        else:
-            log.warning("this Windows version cannot exclude the helper from screen capture; "
-                        "screen-backend captures fail while it overlaps the game")
+        remote = self.remote_session
+        if not self.settings.hide_helper_from_capture or remote:
+            if hwnd in self.grabber.excluded or hwnd not in self.grabber.own:
+                self.grabber.include_window(hwnd)
+                why = "Remote Desktop session" if remote else "disabled in settings"
+                log.info("helper window is visible to screen capture (%s)", why)
+        elif hwnd not in self.grabber.excluded:
+            if self.grabber.exclude_window(hwnd):
+                log.info("helper window is hidden from screenshots (untick 'Hide this window from "
+                         "screenshots' if remote/streaming tools show it blank)")
+            else:
+                log.warning("this Windows version cannot exclude the helper from screen capture; "
+                            "screen-backend captures fail while it overlaps the game")
 
     # ---------- settings ----------
     def read_form(self) -> Settings | None:
@@ -256,7 +349,10 @@ class App:
         """
         s = self.read_form()
         if s:
+            changed = s.hide_helper_from_capture != self.settings.hide_helper_from_capture
             self.settings = s
+            if changed:  # Win32 affinity call only when the checkbox actually changed
+                self._sync_capture_exclusion()
         return s
 
     def apply(self):
@@ -453,13 +549,39 @@ class App:
             self.bot.stop("window closed")
         if self.thread:
             self.thread.join(timeout=3)
+        self._remember_geometry()
         self.root.destroy()
+
+
+def _report_startup_crash(exc: BaseException) -> None:
+    """A windowed exe has no console: write the traceback to a file and try to show it."""
+    import traceback
+
+    text = "".join(traceback.format_exception(exc))
+    path = None
+    try:
+        path = data_dir() / "startup-error.log"
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        r = tk.Tk()
+        r.withdraw()
+        messagebox.showerror("R2 target helper could not start", f"{exc}\n\nDetails: {path or text[-1500:]}")
+        r.destroy()
+    except Exception:
+        pass
 
 
 def main():
     enable_dpi_awareness()
-    root = tk.Tk()
-    App(root)
+    try:
+        root = tk.Tk()
+        root.report_callback_exception = lambda et, ev, tb: log.error("GUI error", exc_info=(et, ev, tb))
+        App(root)
+    except Exception as e:
+        _report_startup_crash(e)
+        raise
     root.mainloop()
 
 

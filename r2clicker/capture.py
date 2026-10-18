@@ -10,8 +10,11 @@ Backends (Settings.capture_backend):
   This helper's own windows are excluded from screen capture (SetWindowDisplayAffinity) and
   then do not count; if exclusion is unsupported they count like any other window.
 - "auto" (default): "window", falling back to "screen" when the window capture is blank.
-  A blank frame is retried once (a window that was just shown can be blank for a moment);
-  after falling back, window capture is probed again every REPROBE_S seconds.
+  After falling back, window capture is probed again every REPROBE_S seconds.
+
+Window capture first tries the fast PrintWindow mode and switches to the full-content mode only
+if the fast one returns a blank frame; the mode that works is remembered per window, so a steady
+state grab is one PrintWindow call. A failed call is retried once immediately (no sleep).
 
 A mapping with hwnd 0 (whole primary screen, empty title) always uses the screen backend.
 """
@@ -115,14 +118,19 @@ if sys.platform == "win32":
 
 PW_CLIENTONLY = 0x1
 PW_RENDERFULLCONTENT = 0x2
+PW_MODES = (PW_CLIENTONLY, PW_CLIENTONLY | PW_RENDERFULLCONTENT)  # fast first
 WDA_EXCLUDEFROMCAPTURE = 0x11
 WS_EX_TRANSPARENT = 0x20
 DWMWA_CLOAKED = 14
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
 
-def print_window(hwnd: int, width: int, height: int) -> np.ndarray:
-    """Client-area pixels of hwnd rendered by the window itself (not the screen). RGB uint8."""
+def print_window(hwnd: int, width: int, height: int, flags: int = PW_CLIENTONLY | PW_RENDERFULLCONTENT) -> np.ndarray:
+    """Client-area pixels of hwnd rendered by the window itself (not the screen). RGB uint8.
+
+    PW_CLIENTONLY alone is fast (a few ms) and enough for GDI-drawn windows. PW_RENDERFULLCONTENT
+    also reads DirectX/DWM content but waits for a composition frame (~17 ms at 60 Hz).
+    """
     if sys.platform != "win32":
         raise CaptureError("window capture needs Windows")
     hdc_win = _u32.GetDC(hwnd)
@@ -136,7 +144,7 @@ def print_window(hwnd: int, width: int, height: int) -> np.ndarray:
         if not hbmp or not bits:
             raise CaptureError("CreateDIBSection failed")
         old = _gdi.SelectObject(hdc, hbmp)
-        ok = _u32.PrintWindow(hwnd, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT)
+        ok = _u32.PrintWindow(hwnd, hdc, flags)
         _gdi.SelectObject(hdc, old)
         if not ok:
             raise CaptureError("PrintWindow failed for the game window")
@@ -188,6 +196,13 @@ def exclude_from_capture(hwnd: int) -> bool:
     return bool(_u32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE))
 
 
+def include_in_capture(hwnd: int) -> bool:
+    """Undo exclude_from_capture (WDA_NONE)."""
+    if sys.platform != "win32" or not hwnd:
+        return False
+    return bool(_u32.SetWindowDisplayAffinity(hwnd, 0))
+
+
 def point_belongs_to(hwnd: int, x: int, y: int) -> bool:
     """True if the screen point (x, y) shows hwnd (or one of its child windows) - i.e. a click lands there."""
     if sys.platform != "win32" or not hwnd:
@@ -207,7 +222,7 @@ class Grabber:
         self.own: set[int] = set()       # this app's top-level windows
         self.excluded: set[int] = set()  # ... of which proven hidden from screen capture
         self._local = threading.local()
-        self._window_ok: dict[int, bool] = {}       # hwnd -> PrintWindow has returned real content
+        self._pw_flags: dict[int, int] = {}         # hwnd -> PrintWindow flags that gave real content
         self._screen_since: dict[int, float] = {}   # hwnd -> when auto fell back to the screen
         self.last_backend = ""
 
@@ -219,6 +234,12 @@ class Grabber:
             self.excluded.add(hwnd)
         return ok
 
+    def include_window(self, hwnd: int) -> None:
+        """Show a window of this app in screen captures again (it then counts as an occluder)."""
+        self.own.add(hwnd)
+        include_in_capture(hwnd)
+        self.excluded.discard(hwnd)
+
     def grab(self, m: Mapping) -> np.ndarray:
         try:
             img = self._grab(m)
@@ -229,12 +250,23 @@ class Grabber:
             raise CaptureError(f"screen capture failed: {e}") from e
         return check_frame(img, m)
 
+    @staticmethod
+    def _print(m: Mapping, flags: int) -> np.ndarray:
+        try:
+            return print_window(m.hwnd, m.width, m.height, flags)
+        except CaptureError:  # PrintWindow occasionally fails once while the window is busy
+            return print_window(m.hwnd, m.width, m.height, flags)
+
     def _window_frame(self, m: Mapping) -> np.ndarray | None:
-        img = print_window(m.hwnd, m.width, m.height)
-        if is_blank(img):
-            time.sleep(0.03)
-            img = print_window(m.hwnd, m.width, m.height)
-        return None if is_blank(img) else img
+        known = self._pw_flags.get(m.hwnd)
+        modes = [known] + [f for f in PW_MODES if f != known] if known else list(PW_MODES)
+        for flags in modes:
+            img = self._print(m, flags)
+            if not is_blank(img):
+                self._pw_flags[m.hwnd] = flags
+                return img
+        self._pw_flags.pop(m.hwnd, None)
+        return None
 
     def _grab(self, m: Mapping) -> np.ndarray:
         if not m.hwnd or self.backend == "screen":
@@ -243,7 +275,6 @@ class Grabber:
         if self.backend == "window" or since is None or time.monotonic() - since >= REPROBE_S:
             img = self._window_frame(m)
             if img is not None:
-                self._window_ok[m.hwnd] = True
                 self._screen_since.pop(m.hwnd, None)
                 self.last_backend = "window"
                 return img

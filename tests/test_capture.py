@@ -21,11 +21,16 @@ class Stub:
         self.above = list(above)
         monkeypatch.setattr(capture, "print_window", self.print_window)
         monkeypatch.setattr(capture, "windows_above", lambda h: self.above)
-        monkeypatch.setattr(capture.time, "sleep", lambda s: None)
+        self.flags = []
+        monkeypatch.setattr(capture.time, "sleep", lambda s: pytest.fail("capture must not sleep"))
 
-    def print_window(self, hwnd, w, h):
+    def print_window(self, hwnd, w, h, flags=3):
         self.print_calls += 1
-        return self.frames.pop(0) if len(self.frames) > 1 else self.frames[0]
+        self.flags.append(flags)
+        f = self.frames.pop(0) if len(self.frames) > 1 else self.frames[0]
+        if isinstance(f, Exception):
+            raise f
+        return f(flags) if callable(f) else f
 
     def screen(self, g, monkeypatch):
         def grab(m):
@@ -136,4 +141,38 @@ def test_whole_screen_mapping_checks_own_windows(monkeypatch):
 def test_size_mismatch_from_print_window(monkeypatch):
     Stub(monkeypatch, [np.dstack([np.tile(np.arange(100, dtype=np.uint8), (50, 1))] * 3)])
     with pytest.raises(CaptureError, match="client is 160x90"):
+        Grabber("window").grab(M)
+
+
+FAST, FULL = capture.PW_CLIENTONLY, capture.PW_CLIENTONLY | capture.PW_RENDERFULLCONTENT
+
+
+def test_steady_state_is_one_fast_printwindow_per_grab(monkeypatch):
+    st = Stub(monkeypatch, [CONTENT])
+    monkeypatch.setattr(capture, "windows_above", lambda h: pytest.fail("window mode needs no Z-order walk"))
+    g = Grabber("auto")
+    st.screen(g, monkeypatch)
+    for _ in range(5):
+        g.grab(M)
+    assert st.flags == [FAST] * 5 and st.screen_calls == 0
+
+
+def test_hardware_rendered_window_remembers_full_content_mode(monkeypatch):
+    # like a DirectX game: the fast mode returns black, the full-content mode returns pixels
+    st = Stub(monkeypatch, [lambda flags: CONTENT if flags == FULL else BLANK])
+    g = Grabber("auto")
+    st.screen(g, monkeypatch)
+    for _ in range(4):
+        assert (g.grab(M) == CONTENT).all()
+    assert st.flags == [FAST, FULL, FULL, FULL, FULL]  # probe once, then one call per grab
+
+
+def test_transient_printwindow_failure_is_retried_once_without_sleep(monkeypatch):
+    st = Stub(monkeypatch, [CaptureError("PrintWindow failed"), CONTENT])
+    assert (Grabber("window").grab(M) == CONTENT).all() and st.print_calls == 2
+
+
+def test_persistent_printwindow_failure_is_reported(monkeypatch):
+    Stub(monkeypatch, [CaptureError("PrintWindow failed for the game window")])
+    with pytest.raises(CaptureError, match="PrintWindow failed"):
         Grabber("window").grab(M)

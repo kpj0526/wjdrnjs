@@ -123,6 +123,7 @@ def helper_app(tk_root, tmp_path, monkeypatch):
     top.attributes("-topmost", True)
     app = gui.App(top)
     app.errors = errors
+    top.geometry("+120+120")  # App centres itself; put it deliberately over the target again
     top.update()
     time.sleep(0.3)
     top.update()
@@ -154,3 +155,23 @@ def test_runtime_grab_shares_the_exclusion(target, helper_app):
     app.grabber.backend = "screen"
     m, _ = resolve_mapping(target.title)
     assert_only_target(grab_with_retry(app.grabber, m))
+
+
+def test_window_capture_speed_budget(target):
+    """Performance regression guard: steady-state window capture is one fast PrintWindow call."""
+    import statistics
+
+    from r2clicker import capture
+
+    m, _ = resolve_mapping(target.title)
+    g = Grabber("auto")
+    grab_with_retry(g, m)  # probe
+    assert g._pw_flags[m.hwnd] == capture.PW_CLIENTONLY  # GDI window: the fast mode suffices
+    ts = []
+    for _ in range(30):
+        t0 = time.perf_counter()
+        g.grab(m)
+        ts.append((time.perf_counter() - t0) * 1000)
+    med = statistics.median(ts)
+    print(f"window capture 400x300: median {med:.1f} ms")
+    assert med < 25, ts  # one full-content frame is ~17 ms; the fast mode is far below

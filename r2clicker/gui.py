@@ -105,11 +105,14 @@ class QueueHandler(logging.Handler):
 
 
 class App:
-    def __init__(self, root: tk.Tk, show: bool = True) -> None:
+    def __init__(self, root: tk.Tk, show: bool = True, force_visible: bool = False) -> None:
         self.root = root
         root.title(f"R2 target helper {__version__}")
         self.settings_file = settings_path()
         self.settings = Settings.load(self.settings_file)
+        if force_visible and self.settings.hide_helper_from_capture:  # --show-window recovery flag
+            self.settings.hide_helper_from_capture = False
+            self.settings.load_notes.append("--show-window: hide_helper_from_capture turned off")
         self.remote_session = is_remote_session()  # checked once at startup
         self.grabber = Grabber(self.settings.capture_backend)
         self.vars: dict[str, tuple[tk.Variable, str]] = {}
@@ -124,6 +127,8 @@ class App:
         self._setup_logging()
         for w in self.settings.load_warnings:
             log.warning("settings: %s", w)
+        for n in self.settings.load_notes:
+            log.info("settings: %s", n)
         log.info("settings file: %s", self.settings_file)
         self._load_initial_frame()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -297,11 +302,13 @@ class App:
             log.warning("could not remember window position: %s", e)
 
     def _sync_capture_exclusion(self):
-        """Keep this window out of screenshots (it is never hidden, so focus and Stop are unaffected).
+        """Apply the opt-in "hide from screenshots" setting to this window.
 
-        Off when disabled in the settings, and automatically under Remote Desktop: Windows also
-        hides capture-excluded windows from remote-desktop/streaming viewers, so there the helper
-        would look invisible.
+        Off by default: on some systems WDA_EXCLUDEFROMCAPTURE also blanks the window itself
+        (black content and taskbar preview), and remote-desktop/streaming viewers never show it.
+        It is not needed for correctness: window capture never contains this window, and the
+        screen backend refuses to capture while this window overlaps the game.
+        Always off under Remote Desktop.
         """
         self.root.update_idletasks()
         try:
@@ -353,7 +360,22 @@ class App:
             self.settings = s
             if changed:  # Win32 affinity call only when the checkbox actually changed
                 self._sync_capture_exclusion()
+                if s.hide_helper_from_capture and not self._confirm_still_visible():
+                    s.hide_helper_from_capture = False
+                    self.vars["hide_helper_from_capture"][0].set(False)
+                    self._sync_capture_exclusion()
+                    log.warning("'Hide this window from screenshots' reverted: the window was not visible")
         return s
+
+    def _confirm_still_visible(self) -> bool:
+        """Like a display-mode change: keep the setting only if the user can still see this window.
+        The question is a separate dialog, which is never excluded, so it stays readable."""
+        return bool(messagebox.askyesno(
+            "Check the window",
+            "Is the R2 target helper window (behind this message) still shown normally?\n\n"
+            "Answer No if it turned black or invisible; the setting is then reverted.",
+            default="no",
+        ))
 
     def apply(self):
         if self._commit_form():
@@ -573,12 +595,12 @@ def _report_startup_crash(exc: BaseException) -> None:
         pass
 
 
-def main():
+def main(force_visible: bool = False):
     enable_dpi_awareness()
     try:
         root = tk.Tk()
         root.report_callback_exception = lambda et, ev, tb: log.error("GUI error", exc_info=(et, ev, tb))
-        App(root)
+        App(root, force_visible=force_visible)
     except Exception as e:
         _report_startup_crash(e)
         raise

@@ -8,7 +8,7 @@ def run() -> int:
         return selftest(sys.argv[2])
     from .gui import main
 
-    main()
+    main(force_visible="--show-window" in sys.argv)
     return 0
 
 

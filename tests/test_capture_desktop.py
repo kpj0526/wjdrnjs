@@ -131,30 +131,119 @@ def helper_app(tk_root, tmp_path, monkeypatch):
     app.on_close()
 
 
-@pytest.mark.parametrize("backend", ["auto", "window", "screen"])
-def test_preview_capture_never_contains_the_helper(target, helper_app, backend):
-    """Regression: the helper window used to appear (recursively) inside its own game capture."""
-    app = helper_app
-    m, _ = resolve_mapping(target.title)
-    hx, hy = app.root.winfo_rootx(), app.root.winfo_rooty()
-    assert hx < m.left and hy < m.top  # the helper really overlaps the target on screen
-    app.vars["window_title"][0].set(target.title)  # typed, no Enter
+def _capture_twice(app, title, backend):
+    app.vars["window_title"][0].set(title)  # typed, no Enter
     app.vars["capture_backend"][0].set(backend)
     for _ in range(2):  # the second capture would show the first one inside the preview
         app.capture_preview()
         app.root.update()
+
+
+@pytest.mark.parametrize("backend", ["auto", "window"])
+def test_preview_capture_never_contains_the_helper(target, helper_app, backend):
+    """Regression: the helper window used to appear (recursively) inside its own game capture.
+    Window capture reads only the game's own pixels: no exclusion needed (default: off)."""
+    app = helper_app
+    m, _ = resolve_mapping(target.title)
+    assert app.root.winfo_rootx() < m.left and app.root.winfo_rooty() < m.top  # really overlapping
+    assert not app.grabber.excluded  # default: the helper is NOT hidden from capture
+    _capture_twice(app, target.title, backend)
     assert not app.errors, app.errors
     assert app.frame.shape == (300, 400, 3)
     assert_only_target(app.frame)
-    assert app.grabber.last_backend == ("screen" if backend == "screen" else "window")
+    assert app.grabber.last_backend == "window"
 
 
-def test_runtime_grab_shares_the_exclusion(target, helper_app):
-    # Start() hands the same Grabber to the engine, so run-time grabs exclude the helper too
+def test_screen_backend_refuses_while_helper_overlaps(target, helper_app):
+    """Default (not excluded): screen capture fails safely instead of capturing the helper."""
     app = helper_app
-    app.grabber.backend = "screen"
+    before = app.frame
+    _capture_twice(app, target.title, "screen")
+    assert app.errors and all("R2 target helper" in e for e in app.errors), app.errors
+    assert app.frame is before  # the preview was not replaced by a frame containing the helper
+
+
+def test_screen_backend_with_explicit_opt_in_excludes_helper(target, helper_app):
+    app = helper_app
+    hwnd = int(app.root.wm_frame(), 16)
+    try:
+        assert app.grabber.exclude_window(hwnd)  # what ticking the checkbox does
+        app.root.update()
+        time.sleep(0.2)
+        _capture_twice(app, target.title, "screen")
+        assert not app.errors, app.errors
+        assert_only_target(app.frame)
+    finally:
+        app.grabber.include_window(hwnd)
+
+
+def test_runtime_grab_uses_the_same_rules(target, helper_app):
+    # Start() hands the same Grabber to the engine
+    app = helper_app
     m, _ = resolve_mapping(target.title)
+    app.grabber.backend = "window"
     assert_only_target(grab_with_retry(app.grabber, m))
+    app.grabber.backend = "screen"
+    with pytest.raises(CaptureError, match="R2 target helper"):
+        app.grabber.grab(m)
+
+
+# --- the helper window itself must be visible (customer: black window / taskbar preview) ---
+
+
+def _affinity(hwnd):
+    import ctypes
+    from ctypes import wintypes
+
+    u = ctypes.windll.user32
+    u.GetWindowDisplayAffinity.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    v = wintypes.DWORD(99)
+    assert u.GetWindowDisplayAffinity(hwnd, ctypes.byref(v))
+    return v.value
+
+
+def _screen_vs_self_render(app):
+    """Compare what the screen/DWM shows for the helper (the same composition path that the taskbar
+    thumbnail and screen sharing use) with what the window renders itself (PrintWindow)."""
+    from r2clicker.capture import print_window
+    from r2clicker.geometry import Mapping
+
+    app.root.lift()
+    app.root.attributes("-topmost", True)
+    app.root.update()
+    time.sleep(0.3)
+    app.root.update()
+    client = int(app.root.winfo_id())
+    x, y = app.root.winfo_rootx(), app.root.winfo_rooty()
+    w, h = app.root.winfo_width(), app.root.winfo_height()
+    own = print_window(client, w, h).astype(np.int16)
+    shown = Grabber("screen")._mss_grab(Mapping(x, y, w, h)).astype(np.int16)
+    return own, shown, float(np.abs(own - shown).mean())
+
+
+def test_helper_window_is_displayed_normally_by_default(helper_app):
+    app = helper_app
+    hwnd = int(app.root.wm_frame(), 16)
+    assert _affinity(hwnd) == 0  # WDA_NONE: shown everywhere, including the taskbar preview
+    own, shown, diff = _screen_vs_self_render(app)
+    assert own.std() > 10  # the window really has UI content
+    assert shown.max() - shown.min() > 50, "window composited as a flat (black) area"
+    assert diff < 12, f"on-screen content differs from the window's own rendering (mean {diff:.1f})"
+
+
+def test_display_check_detects_an_excluded_window(helper_app):
+    """Proves the check above would catch the customer's symptom: once excluded, the composited
+    view of the window no longer matches its own rendering."""
+    app = helper_app
+    hwnd = int(app.root.wm_frame(), 16)
+    try:
+        assert app.grabber.exclude_window(hwnd)
+        assert _affinity(hwnd) == 0x11
+        _, _, diff = _screen_vs_self_render(app)
+        assert diff >= 12, diff
+    finally:
+        app.grabber.include_window(hwnd)
+    assert _affinity(hwnd) == 0
 
 
 def test_window_capture_speed_budget(target):

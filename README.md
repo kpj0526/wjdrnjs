@@ -27,7 +27,7 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -m pytest -q tests               # offline test suite
 ```
 
-Requires Windows 10 or newer and Python 3.10 or newer (releases are built with 3.12). Excluding the helper from screen capture needs Windows 10 version 2004 or newer.
+Requires Windows 10 or newer and Python 3.10 or newer (releases are built with 3.12). The optional "Hide this window from screenshots" needs Windows 10 version 2004 or newer.
 
 ## Usage
 
@@ -82,20 +82,31 @@ capture. The **Capture backend** setting controls how frames are taken:
 | `window` | `PrintWindow` (fast `PW_CLIENTONLY`, or `+PW_RENDERFULLCONTENT` when the fast mode is blank): the game window renders its own client area into memory. |\| PW_RENDERFULLCONTENT)`: the game window renders its own client area into memory. | Not included. The window's own pixels come back even when covered. A blank result (some DirectX/OpenGL games and hardware-accelerated browsers) is an error, never used. |
 | `screen` | Screen pixels via mss. | Before every grab, the windows above the game are checked. If one overlaps the client area, the grab fails and names that window. |
 
-The helper's window is excluded from screen capture with
-`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` (Windows 10 2004+). It stays visible
-and focusable, and is never hidden or moved, so Stop/F12 and focus behave normally. If
-exclusion is unsupported, the log says so, and `screen` captures then fail while the helper
-overlaps the game.
+The helper's own window is shown normally and is **not** hidden from capture by default:
+- **Window capture** (`auto`/`window`) never contains the helper anyway, so nothing needs
+  hiding.
+- **Screen capture** treats the helper like any other window. While the helper overlaps the
+  game, the grab fails with a message naming the helper; it never returns a frame containing
+  the helper. Move the helper off the game when using `screen`.
 
-The preview button and the running loop share the same capture object, so both get the
-same guarantees.
+**Hide this window from screenshots** (opt-in, Windows 10 2004+) applies
+`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`, so the helper may overlap the game even
+with `screen` capture. Use it only if you need that:
+- On some PCs it also makes the window itself black, including its taskbar preview.
+- Remote desktop and streaming tools (RDP, AnyDesk, TeamViewer, Discord/OBS) always show an
+  excluded window as black or invisible.
 
-Windows also hides capture-excluded windows from **remote desktop and streaming tools**
-(RDP, AnyDesk, TeamViewer, Discord/OBS). Seen through one of those, the helper looks
-invisible or black even though it is running. Exclusion is therefore off automatically in
-Remote Desktop sessions (checked once at startup). For the other tools, untick **Hide this
-window from screenshots**.
+To keep it from locking you out:
+- When you tick it, a separate dialog asks whether the window is still shown normally. Any
+  answer except **Yes** reverts it.
+- It is ignored in Remote Desktop sessions (checked once at startup).
+- Settings files from the previous release stored `true` here as the old default, not as a
+  choice. They are migrated to off automatically.
+- Last resort: start `R2TargetHelper.exe --show-window`. It turns the setting off for that
+  session; save to keep it off.
+
+The preview button and the running loop share the same capture object, so both follow the
+same rules.
 
 **Speed.** Measured on this development PC with a 1600x900 window at 60 Hz:
 
@@ -264,8 +275,8 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
 - Whether the game accepts `SendInput` clicks, or blocks automation, is untested; there was
   no live testing. Check that the game's terms allow this kind of tool.
 - Whether `PrintWindow` can read the R2 client is unknown until it is tried on the real game.
-  If the preview reports `[screen capture]`, the game is hardware-rendered. Keep the game
-  uncovered (the helper may overlap it; it is excluded) or the capture fails.
+  If the preview reports `[screen capture]`, the game is hardware-rendered. Then keep the
+  game uncovered, including by the helper, or the capture fails safely.
 - `PrintWindow` asks the game to redraw into memory on every grab. With some games that costs
   a few ms or causes flicker; if so, choose `screen`.
 - Corpses also show a white nameplate. The detector cannot yet tell a corpse's nameplate

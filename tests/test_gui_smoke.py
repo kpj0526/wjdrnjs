@@ -274,19 +274,75 @@ def test_remote_session_keeps_helper_visible_to_capture(tk_root, tmp_path, monke
     app.on_close()
 
 
-def test_exclusion_follows_the_checkbox(tk_root, tmp_path, monkeypatch):
+def _affinity_spy(monkeypatch):
     from r2clicker import capture, gui
 
     monkeypatch.setattr(gui, "is_remote_session", lambda: False)
     calls = []
-    monkeypatch.setattr(capture, "exclude_from_capture", lambda h: calls.append(("ex", h)) or True)
-    monkeypatch.setattr(capture, "include_in_capture", lambda h: calls.append(("in", h)) or True)
+    monkeypatch.setattr(capture, "exclude_from_capture", lambda h: calls.append("ex") or True)
+    monkeypatch.setattr(capture, "include_in_capture", lambda h: calls.append("in") or True)
+    return calls
+
+
+def test_new_install_never_hides_the_window(tk_root, tmp_path, monkeypatch):
+    calls = _affinity_spy(monkeypatch)
     app = _new_app(tk_root, monkeypatch, tmp_path, show=False)
-    assert [c[0] for c in calls] == ["ex"]
-    app.vars["hide_helper_from_capture"][0].set(False)
+    assert app.settings.hide_helper_from_capture is False
+    assert "ex" not in calls and not app.grabber.excluded
+    app.on_close()
+
+
+@pytest.mark.parametrize("answer, kept", [(True, True), (False, False)])
+def test_opt_in_is_kept_only_if_user_confirms_window_visible(tk_root, tmp_path, monkeypatch, answer, kept):
+    from r2clicker import gui
+
+    calls = _affinity_spy(monkeypatch)
+    asked = []
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: asked.append(1) or answer)
+    app = _new_app(tk_root, monkeypatch, tmp_path, show=False)
+    calls.clear()
+    app.vars["hide_helper_from_capture"][0].set(True)
     app.apply()
-    app.apply()  # unchanged: no further Win32 call
-    assert [c[0] for c in calls] == ["ex", "in"] and not app.grabber.excluded
+    assert asked == [1]
+    assert app.settings.hide_helper_from_capture is kept
+    assert app.vars["hide_helper_from_capture"][0].get() is kept
+    assert calls == (["ex"] if kept else ["ex", "in"])
+    assert bool(app.grabber.excluded) is kept
+    app.apply()  # unchanged afterwards: no further Win32 call, no second question
+    assert asked == [1] and len(calls) == (1 if kept else 2)
+    app.on_close()
+
+
+def test_legacy_settings_true_is_reset_so_window_is_visible(tk_root, tmp_path, monkeypatch):
+    import json
+
+    calls = _affinity_spy(monkeypatch)
+    # a settings.json written by the previous release: the old default True, no settings_version
+    (tmp_path / "settings.json").write_text(json.dumps({"hide_helper_from_capture": True, "wait_interval": 3.0}),
+                                            encoding="utf-8")
+    app = _new_app(tk_root, monkeypatch, tmp_path, show=False)
+    assert app.settings.hide_helper_from_capture is False and app.settings.wait_interval == 3.0
+    assert "ex" not in calls and not app.grabber.excluded
+    app.on_close()
+
+
+def test_explicit_v2_opt_in_is_honoured_at_startup(tk_root, tmp_path, monkeypatch):
+    from r2clicker.config import Settings
+
+    calls = _affinity_spy(monkeypatch)
+    Settings(hide_helper_from_capture=True).save(tmp_path / "settings.json")
+    app = _new_app(tk_root, monkeypatch, tmp_path, show=False)
+    assert app.settings.hide_helper_from_capture is True and calls == ["ex"]
+    app.on_close()
+
+
+def test_show_window_flag_overrides_an_opt_in(tk_root, tmp_path, monkeypatch):
+    from r2clicker.config import Settings
+
+    calls = _affinity_spy(monkeypatch)
+    Settings(hide_helper_from_capture=True).save(tmp_path / "settings.json")
+    app = _new_app(tk_root, monkeypatch, tmp_path, show=False, force_visible=True)
+    assert app.settings.hide_helper_from_capture is False and "ex" not in calls
     app.on_close()
 
 

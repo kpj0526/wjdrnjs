@@ -14,6 +14,11 @@ R2 Target Helper - quick start
 Emergency stop: hold F12, or push the mouse into the top-left corner of the monitor,
 or press Stop. Clicks are only sent while the game window is the active window.
 
+If this window ever looks black (also in the taskbar preview), start it once with
+  R2TargetHelper.exe --show-window
+and press "Save settings". This turns off the optional "Hide this window from
+screenshots", which some PCs and remote/streaming tools show as black.
+
 Files:
   settings.json        your settings (created on first "Save settings")
   settings.example.json  default values for reference

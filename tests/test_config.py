@@ -90,5 +90,29 @@ def test_int_json_value_for_float_setting(tmp_path):
 
 def test_utf8_bom_accepted(tmp_path):
     p = tmp_path / "settings.json"
-    p.write_bytes("﻿".encode() + json.dumps({"window_title": "알투"}).encode("utf-8"))
+    p.write_bytes("\ufeff".encode() + json.dumps({"window_title": "알투"}).encode("utf-8"))
     assert Settings.load(p).window_title == "알투"
+
+
+def test_hide_helper_defaults_off_and_is_saved_with_version(tmp_path):
+    from r2clicker.config import SETTINGS_VERSION
+
+    assert Settings().hide_helper_from_capture is False
+    p = tmp_path / "s.json"
+    Settings(hide_helper_from_capture=True).save(p)
+    d = json.loads(p.read_text(encoding="utf-8"))
+    assert d["settings_version"] == SETTINGS_VERSION and d["hide_helper_from_capture"] is True
+    assert Settings.load(p).hide_helper_from_capture is True  # an explicit v2 choice is kept
+
+
+@pytest.mark.parametrize("data, notes", [
+    ({"hide_helper_from_capture": True}, 1),                          # previous release's default
+    ({"hide_helper_from_capture": True, "settings_version": 1}, 1),
+    ({"hide_helper_from_capture": False}, 0),
+    ({}, 0),
+])
+def test_legacy_files_never_hide_the_window(tmp_path, data, notes):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(data), encoding="utf-8")
+    s = Settings.load(p)
+    assert s.hide_helper_from_capture is False and len(s.load_notes) == notes and not s.load_warnings

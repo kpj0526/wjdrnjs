@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 REF_W, REF_H = 1600, 900
+SETTINGS_VERSION = 2  # 2: hide_helper_from_capture is an explicit opt-in (default off)
 
 Rect = tuple[int, int, int, int]  # x1, y1, x2, y2 (x2/y2 exclusive)
 
@@ -89,9 +90,10 @@ class Settings:
     # --- safety ---
     emergency_hotkey: str = "F12"
     corner_failsafe: bool = True      # cursor in the top-left screen corner stops the run
-    hide_helper_from_capture: bool = True  # keep the helper out of screenshots (auto-off under Remote
-                                           # Desktop; also turn off for AnyDesk/TeamViewer/streaming,
-                                           # which otherwise show the helper as invisible/black)
+    hide_helper_from_capture: bool = False  # opt-in: exclude the helper window from screenshots.
+                                            # On some systems this also blanks the window itself
+                                            # (black window/taskbar preview), and remote/streaming
+                                            # viewers never show it. Window capture never needs it.
 
     # --- helper window ---
     window_geometry: str = ""         # last window size/position "WxH+X+Y"; corrected onto a monitor at start
@@ -100,7 +102,9 @@ class Settings:
     log_dir: str = "logs"             # relative paths are resolved against the app data folder
     save_failure_shots: bool = False
 
+    settings_version: int = SETTINGS_VERSION
     load_warnings: list[str] = field(default_factory=list, repr=False, compare=False)
+    load_notes: list[str] = field(default_factory=list, repr=False, compare=False)  # migrations
 
     @classmethod
     def load(cls, path: str | Path) -> "Settings":
@@ -126,7 +130,7 @@ class Settings:
         """Settings from a dict. Values of the wrong type keep the default and add a warning."""
         s = cls()
         for f in fields(cls):
-            if f.name not in data or f.name == "load_warnings":
+            if f.name not in data or f.name in ("load_warnings", "load_notes"):
                 continue
             default = getattr(s, f.name)
             try:
@@ -135,6 +139,14 @@ class Settings:
                 s.load_warnings.append(f"{f.name}: invalid value {data[f.name]!r}; using {default!r}")
                 continue
             setattr(s, f.name, v)
+        if not isinstance(data.get("settings_version"), int) or data["settings_version"] < 2:
+            # Version 1 files stored hide_helper_from_capture=True as the old default, not as a user
+            # choice, and it can leave the window black on screen: reset it to the safe default.
+            if s.hide_helper_from_capture:
+                s.load_notes.append("hide_helper_from_capture reset to off (it was the old default, "
+                                    "not a choice; it can make this window black)")
+            s.hide_helper_from_capture = False
+        s.settings_version = SETTINGS_VERSION
         return s
 
     def save(self, path: str | Path) -> None:
@@ -143,6 +155,7 @@ class Settings:
         p.parent.mkdir(parents=True, exist_ok=True)
         d = asdict(self)
         d.pop("load_warnings", None)
+        d.pop("load_notes", None)
         tmp = p.with_suffix(p.suffix + ".tmp")
         tmp.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, p)

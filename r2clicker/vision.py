@@ -7,6 +7,7 @@ cosine-similarity match on the white mask.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -56,6 +57,26 @@ def outlined_white(a: np.ndarray, s: Settings) -> np.ndarray:
     return white_mask(a, s) & dilate(dark, s.outline_radius)
 
 
+def _long_runs_1d(m: np.ndarray, n: int) -> np.ndarray:
+    """Pixels that belong to a run of >= n consecutive True values along axis 1."""
+    H, W = m.shape
+    if n > W:
+        return np.zeros_like(m)
+    c = np.pad(m.astype(np.int32), ((0, 0), (1, 0))).cumsum(axis=1)
+    full = (c[:, n:] - c[:, :-n]) == n  # window starting at x is all True
+    out = np.zeros_like(m)
+    for k in range(n):  # spread each full window over its n pixels
+        out[:, k:k + full.shape[1]] |= full
+    return out
+
+
+def strip_long_runs(m: np.ndarray, n: int) -> np.ndarray:
+    """Remove straight horizontal/vertical white runs (bars, frames, box rims). Text strokes are short."""
+    if n <= 1:
+        return m
+    return m & ~_long_runs_1d(m, n) & ~_long_runs_1d(m.T, n).T
+
+
 def green_mask(a: np.ndarray, s: Settings) -> np.ndarray:
     r, g, b = a[..., 0], a[..., 1], a[..., 2]
     return (g >= s.green_min_g) & (g - r >= s.green_min_delta) & (g - b >= s.green_min_delta)
@@ -98,7 +119,11 @@ def load_template(path: str, s: Settings, scale: float = 1.0) -> np.ndarray | No
         return None
     from PIL import Image
 
-    img = Image.open(path).convert("RGB")
+    try:
+        img = Image.open(path).convert("RGB")
+    except (OSError, ValueError) as e:
+        logging.getLogger("r2clicker").warning("template %s unreadable (%s); using box search", path, e)
+        return None
     if abs(scale - 1.0) > 0.01:
         img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.BILINEAR)
     a = np.asarray(img).astype(np.int16)
@@ -135,6 +160,8 @@ def verify(
     import time
 
     t0 = time.perf_counter()
+    if before is not None and before.shape != after.shape:
+        return VerifyResult(False, "frame size changed since baseline")
     H, W = after.shape[:2]
     ax1, ay1, ax2, ay2 = verify_area(s, mapping, (H, W))
     a = after[ay1:ay2, ax1:ax2, :3].astype(np.int16)
@@ -152,6 +179,8 @@ def verify(
         x1, y1, x2, y2 = mapping.rect_to_client(r)
         wm[max(0, y1 - ay1):max(0, y2 - ay1), max(0, x1 - ax1):max(0, x2 - ax1)] = False
         gm[max(0, y1 - ay1):max(0, y2 - ay1), max(0, x1 - ax1):max(0, x2 - ax1)] = False
+
+    wm = strip_long_runs(wm, mapping.scale_len(s.max_stroke_run))
 
     def done(ok, reason, **kw):
         return VerifyResult(ok, reason, ms=(time.perf_counter() - t0) * 1000, **kw)

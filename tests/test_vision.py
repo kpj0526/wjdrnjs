@@ -80,3 +80,56 @@ def test_verify_is_fast(base_img, base):
     after = frame_with_nameplate(base_img, (700, 250))
     r = verify(after, Settings(), M, before=base)
     assert r.ms < 400  # generous for slow machines; ~80 ms on a desktop
+
+
+def test_frame_size_change_is_not_a_selection(base_img, base):
+    small = np.asarray(base_img.resize((1280, 720)))
+    r = verify(small, Settings(), Mapping(0, 0, 1280, 720), before=base)
+    assert not r.ok and "size" in r.reason
+
+
+def test_unreadable_or_missing_template_falls_back(tmp_path):
+    bad = tmp_path / "plate.png"
+    bad.write_bytes(b"not a png")
+    assert load_template(str(bad), Settings()) is None
+    assert load_template(str(tmp_path / "missing.png"), Settings()) is None
+    blank = tmp_path / "blank.png"
+    Image.new("RGB", (80, 16), (30, 30, 30)).save(blank)
+    assert load_template(str(blank), Settings()) is None  # no white text in it
+
+
+def test_solid_white_flash_with_green_is_rejected(base_img, base):
+    from PIL import ImageDraw
+
+    img = base_img.copy()
+    d = ImageDraw.Draw(img)
+    d.rectangle((600, 240, 700, 262), fill=(255, 255, 255), outline=(0, 0, 0))
+    d.rectangle((705, 245, 715, 255), fill=(40, 230, 40))
+    assert not verify(np.asarray(img), Settings(), M, before=base).ok
+
+
+def test_green_only_change_is_rejected(base_img, base):
+    from PIL import ImageDraw
+
+    img = base_img.copy()
+    ImageDraw.Draw(img).ellipse((600, 240, 640, 280), fill=(40, 230, 40))
+    r = verify(np.asarray(img), Settings(), M, before=base)
+    assert not r.ok and r.reason == "no nameplate text"
+
+
+def test_hud_text_is_ignored(base_img, base):
+    # a nameplate-looking thing drawn over the buff bar (a UI rect) must not count
+    after = frame_with_nameplate(base_img, (1200, 120))
+    assert not verify(after, Settings(), M, before=base).ok
+
+
+def test_nameplate_at_verify_area_edge_still_found(base_img, base):
+    # mob at the top of the ROI: its nameplate floats above the ROI, inside the margin
+    after = frame_with_nameplate(base_img, (520, 80))
+    assert verify(after, Settings(), M, before=base).ok
+
+
+def test_player_ignore_rect_is_a_known_blind_spot(base_img, base):
+    after = frame_with_nameplate(base_img, (800, 410))
+    assert not verify(after, Settings(), M, before=base).ok
+    assert verify(after, Settings(verify_ignore_rects=[]), M, before=base).ok

@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
+import os
 import queue
 import sys
 import threading
-import time
 import tkinter as tk
 from dataclasses import fields
 from pathlib import Path
@@ -15,18 +16,19 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from .candidates import ORDERS, build_candidates
-from .capture import Grabber
+from . import __version__
+from .capture import CaptureError, Grabber
 from .config import Settings
 from .engine import Bot
-from .geometry import Mapping, enable_dpi_awareness, resolve_mapping
+from .geometry import Mapping, WindowNotFound, enable_dpi_awareness, resolve_mapping
+from .paths import data_dir, resolve_in_data_dir, sample_image, settings_path
 from .vision import load_template, verify
 from .winput import DryRunMouse, Win32Mouse
 
 log = logging.getLogger("r2clicker")
-SETTINGS_FILE = Path("settings.json")
 PREVIEW_W = 800
 
-# (field, label, kind) — kind: str|int|float|bool|tuple|rects|choice:<a>|<b>
+# (field, label, kind) - kind: str|int|float|bool|tuple|rects|choice:<a>|<b>
 FORM = [
     ("Window / coordinates", None, None),
     ("window_title", "Game window title contains", "str"),
@@ -42,9 +44,10 @@ FORM = [
     ("ui_rects", "UI rects to avoid (x1,y1,x2,y2; ...)", "rects"),
     ("park_point", "Cursor park point x,y", "tuple"),
     ("Timing (seconds) / limits", None, None),
-    ("wait_interval", "Wait between cycles", "float"),
-    ("verify_delay", "Check after left click", "float"),
-    ("verify_timeout", "Give up check after", "float"),
+    ("wait_interval", "Wait after right click -> next cycle (s)", "float"),
+    ("verify_delay", "Check nameplate after left click (s)", "float"),
+    ("verify_timeout", "Give up nameplate check after (s)", "float"),
+    ("right_click_delay", "Delay before right click (s)", "float"),
     ("max_attempts", "Max left clicks per cycle", "int"),
     ("max_cycles", "Max cycles (0=unlimited)", "int"),
     ("max_consecutive_failed_cycles", "Stop after N empty cycles", "int"),
@@ -101,8 +104,9 @@ class QueueHandler(logging.Handler):
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title("R2 target helper")
-        self.settings = Settings.load(SETTINGS_FILE)
+        root.title(f"R2 target helper {__version__}")
+        self.settings_file = settings_path()
+        self.settings = Settings.load(self.settings_file)
         self.grabber = Grabber()
         self.vars: dict[str, tuple[tk.Variable, str]] = {}
         self.frame: np.ndarray | None = None
@@ -114,7 +118,11 @@ class App:
         self.verify_box = None
         self._build()
         self._setup_logging()
+        for w in self.settings.load_warnings:
+            log.warning("settings: %s", w)
+        log.info("settings file: %s", self.settings_file)
         self._load_initial_frame()
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self._poll)
 
     # ---------- layout ----------
@@ -127,7 +135,7 @@ class App:
         bar = ttk.Frame(left)
         bar.pack(fill="x")
         ttk.Button(bar, text="Capture game screen", command=self.capture_preview).pack(side="left")
-        ttk.Button(bar, text="Load screenshot…", command=self.load_image).pack(side="left", padx=4)
+        ttk.Button(bar, text="Load screenshot...", command=self.load_image).pack(side="left", padx=4)
         ttk.Button(bar, text="Test check on image", command=self.test_verify).pack(side="left")
         ttk.Label(bar, text="  Drag sets:").pack(side="left")
         self.drag_mode = tk.StringVar(value="roi")
@@ -153,6 +161,7 @@ class App:
         self.hotkey_lbl = ttk.Label(ctl, text="")
         self.hotkey_lbl.pack(side="left", padx=8)
         ttk.Button(ctl, text="Save settings", command=self.save).pack(side="right")
+        ttk.Button(ctl, text="Open data folder", command=lambda: os.startfile(data_dir())).pack(side="right", padx=4)
         ttk.Button(ctl, text="Apply / redraw", command=self.apply).pack(side="right", padx=4)
 
         self.logbox = tk.Text(left, height=12, font=("Consolas", 9), state="disabled")
@@ -185,14 +194,25 @@ class App:
             r += 1
 
     def _setup_logging(self):
-        Path(self.settings.log_dir).mkdir(parents=True, exist_ok=True)
         fmt = logging.Formatter("%(asctime)s.%(msecs)03d %(levelname)s %(message)s", "%H:%M:%S")
-        fh = logging.FileHandler(Path(self.settings.log_dir) / f"run-{time.strftime('%Y%m%d')}.log", encoding="utf-8")
-        fh.setFormatter(fmt)
         qh = QueueHandler(self.log_q)
         qh.setFormatter(fmt)
-        log.handlers[:] = [fh, qh]
+        handlers: list[logging.Handler] = [qh]
+        self.log_file = None
+        try:
+            d = resolve_in_data_dir(self.settings.log_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            self.log_file = d / "r2helper.log"
+            fh = logging.handlers.RotatingFileHandler(self.log_file, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+            fh.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+            handlers.append(fh)
+        except OSError as e:
+            self.log_q.put(f"WARNING log file disabled: {e}")
+        for h in log.handlers:
+            h.close()
+        log.handlers[:] = handlers
         log.setLevel(logging.INFO)
+        log.propagate = False
 
     # ---------- settings ----------
     def read_form(self) -> Settings | None:
@@ -203,16 +223,14 @@ class App:
                 if kind not in ("bool",) and not kind.startswith("choice:"):
                     v = _parse(v, kind)
                 setattr(s, name, v)
-            if len(s.roi) != 4 or s.roi[0] >= s.roi[2] or s.roi[1] >= s.roi[3]:
-                raise ValueError("ROI must be x1,y1,x2,y2 with x1<x2 and y1<y2")
-            if len(s.player_center) != 2 or len(s.park_point) != 2:
-                raise ValueError("points need x,y")
-            if s.wait_interval < 0 or s.max_attempts < 1 or s.grid_step < 5:
-                raise ValueError("wait >= 0, max attempts >= 1, grid step >= 5")
         except ValueError as e:
             messagebox.showerror("Invalid setting", str(e))
             return None
         s.dry_run = bool(self.dry_var.get())
+        problems = s.validate()
+        if problems:
+            messagebox.showerror("Invalid settings", "\n".join(problems))
+            return None
         return s
 
     def apply(self):
@@ -225,8 +243,11 @@ class App:
         s = self.read_form()
         if s:
             self.settings = s
-            s.save(SETTINGS_FILE)
-            log.info("settings saved to %s", SETTINGS_FILE.resolve())
+            try:
+                s.save(self.settings_file)
+                log.info("settings saved to %s", self.settings_file)
+            except OSError as e:
+                messagebox.showerror("Save failed", f"Could not write {self.settings_file}:\n{e}")
 
     def _set_field(self, name, value):
         var, kind = self.vars[name]
@@ -234,8 +255,8 @@ class App:
 
     # ---------- preview ----------
     def _load_initial_frame(self):
-        sample = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "r2_cluster_1600x900.png"
-        if sample.exists():
+        sample = sample_image()
+        if sample:
             self._set_frame(np.asarray(Image.open(sample).convert("RGB")), f"sample: {sample.name}")
         else:
             self.redraw()
@@ -250,13 +271,23 @@ class App:
         self.redraw()
 
     def capture_preview(self):
-        m, desc = resolve_mapping(self.settings.window_title, self.settings.ref_w, self.settings.ref_h)
-        self._set_frame(self.grabber.grab(m), desc, Mapping(0, 0, m.width, m.height, m.ref_w, m.ref_h))
+        try:
+            m, desc = resolve_mapping(self.settings.window_title, self.settings.ref_w, self.settings.ref_h)
+            frame = self.grabber.grab(m)
+        except (WindowNotFound, CaptureError) as e:
+            messagebox.showerror("Capture failed", str(e))
+            return
+        self._set_frame(frame, desc, Mapping(0, 0, m.width, m.height, m.ref_w, m.ref_h))
 
     def load_image(self):
         p = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.bmp"), ("All", "*.*")])
         if p:
-            self._set_frame(np.asarray(Image.open(p).convert("RGB")), Path(p).name)
+            try:
+                arr = np.asarray(Image.open(p).convert("RGB"))
+            except (OSError, ValueError) as e:
+                messagebox.showerror("Cannot open image", str(e))
+                return
+            self._set_frame(arr, Path(p).name)
 
     def test_verify(self):
         s = self.read_form()
@@ -351,12 +382,13 @@ class App:
             mouse = Win32Mouse()
         else:
             mouse = DryRunMouse()
+        log.info("wait after right click -> next cycle: %.3f s", s.wait_interval)
         self.bot = Bot(s, self.grabber.grab, mouse)
         self.thread = threading.Thread(target=self.bot.run, daemon=True)
         self.thread.start()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
-        self.hotkey_lbl.config(text=f"RUNNING ({'dry run' if s.dry_run else 'LIVE'}) — {s.emergency_hotkey} stops",
+        self.hotkey_lbl.config(text=f"RUNNING ({'dry run' if s.dry_run else 'LIVE'}) - {s.emergency_hotkey} stops",
                                foreground="#c00" if not s.dry_run else "#060")
 
     def stop(self):
@@ -379,8 +411,17 @@ class App:
             self.thread = None
             self.start_btn.config(state="normal")
             self.stop_btn.config(state="disabled")
-            self.hotkey_lbl.config(text="stopped", foreground="#555")
+            reason = self.bot.stop_reason if self.bot else ""
+            self.hotkey_lbl.config(text=f"stopped: {reason}", foreground="#555")
         self.root.after(100, self._poll)
+
+
+    def on_close(self):
+        if self.bot:
+            self.bot.stop("window closed")
+        if self.thread:
+            self.thread.join(timeout=3)
+        self.root.destroy()
 
 
 def main():

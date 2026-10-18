@@ -7,7 +7,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-FIXTURE = Path(__file__).parent / "fixtures" / "r2_cluster_1600x900.png"
+FIXTURE = Path(__file__).resolve().parent.parent / "assets" / "sample_1600x900.png"
 
 
 @pytest.fixture(scope="session")

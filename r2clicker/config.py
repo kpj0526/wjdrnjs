@@ -7,6 +7,7 @@ size (see geometry.py), so the same settings work at other resolutions.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -46,7 +47,8 @@ class Settings:
     sticky_radius: int = 120          # try points near the last success first (0 = off)
 
     # --- timing (seconds) ---
-    wait_interval: float = 5.0        # exact wait between cycles (after right click)
+    wait_interval: float = 5.0        # seconds from the end of a cycle (its right click, or its last
+                                      # failed attempt) to the start of the next cycle
     verify_delay: float = 0.25        # after left click, before verification screenshot
     verify_timeout: float = 0.6       # keep re-checking until this long after the click
     settle_delay: float = 0.08        # after moving cursor off, before the baseline shot
@@ -73,6 +75,7 @@ class Settings:
     require_outline: bool = True      # text pixels must touch dark outline/background (rejects glows)
     outline_dark_max: int = 100       # mean RGB at or below this counts as dark
     outline_radius: int = 2
+    max_stroke_run: int = 24          # straight white runs at least this long are bars/frames, not text
     verify_ignore_rects: list[Rect] = field(default_factory=lambda: [(735, 345, 865, 480)])  # player HP bar + skill flash
     plate_w: int = 90                 # expected nameplate text box (reference px)
     plate_h: int = 16
@@ -87,31 +90,141 @@ class Settings:
     corner_failsafe: bool = True      # cursor in the top-left screen corner stops the run
 
     # --- logging ---
-    log_dir: str = "logs"
+    log_dir: str = "logs"             # relative paths are resolved against the app data folder
     save_failure_shots: bool = False
+
+    load_warnings: list[str] = field(default_factory=list, repr=False, compare=False)
 
     @classmethod
     def load(cls, path: str | Path) -> "Settings":
+        """Load settings; a missing, unreadable or corrupt file gives defaults (never raises).
+
+        Problems are recorded in `load_warnings` so the GUI can show them.
+        """
         p = Path(path)
         if not p.exists():
             return cls()
-        data = json.loads(p.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(p.read_text(encoding="utf-8-sig"))
+            if not isinstance(data, dict):
+                raise ValueError("top level is not an object")
+        except (OSError, ValueError) as e:
+            s = cls()
+            s.load_warnings.append(f"{p.name} could not be read ({e}); using defaults")
+            return s
         return cls.from_dict(data)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Settings":
+        """Settings from a dict. Values of the wrong type keep the default and add a warning."""
         s = cls()
         for f in fields(cls):
-            if f.name not in data:
+            if f.name not in data or f.name == "load_warnings":
                 continue
-            v = data[f.name]
             default = getattr(s, f.name)
-            if isinstance(default, tuple):
-                v = tuple(v)
-            elif f.name in ("ui_rects", "verify_ignore_rects"):
-                v = [tuple(r) for r in v]
+            try:
+                v = _coerce(data[f.name], default, f.name)
+            except (TypeError, ValueError):
+                s.load_warnings.append(f"{f.name}: invalid value {data[f.name]!r}; using {default!r}")
+                continue
             setattr(s, f.name, v)
         return s
 
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8")
+        """Atomic write: a crash mid-save never leaves a truncated settings file."""
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        d = asdict(self)
+        d.pop("load_warnings", None)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+
+    def validate(self) -> list[str]:
+        """Human-readable problems that must be fixed before a run. Empty list = OK."""
+        from .candidates import ORDERS
+        from .winput import VK_CODES
+
+        e: list[str] = []
+        W, H = self.ref_w, self.ref_h
+        if W <= 0 or H <= 0:
+            e.append("reference size must be positive")
+        if len(self.roi) != 4:
+            e.append("ROI needs x1,y1,x2,y2")
+        else:
+            x1, y1, x2, y2 = self.roi
+            if not (0 <= x1 < x2 <= W and 0 <= y1 < y2 <= H):
+                e.append(f"ROI must satisfy 0 <= x1 < x2 <= {W} and 0 <= y1 < y2 <= {H}")
+            elif x2 - x1 < self.grid_step or y2 - y1 < self.grid_step:
+                e.append("ROI is smaller than one grid step")
+        for name in ("player_center", "park_point"):
+            pt = getattr(self, name)
+            if len(pt) != 2:
+                e.append(f"{name} needs x,y")
+            elif not (0 <= pt[0] < W and 0 <= pt[1] < H):
+                e.append(f"{name} must be inside the {W}x{H} game client")
+        if len(self.park_point) == 2 and len(self.roi) == 4:
+            x1, y1, x2, y2 = self.roi
+            px, py = self.park_point
+            if x1 <= px < x2 and y1 <= py < y2:
+                e.append("park point must be outside the ROI (the cursor would hover mobs)")
+        for name in ("ui_rects", "verify_ignore_rects"):
+            for r in getattr(self, name):
+                if len(r) != 4 or r[0] >= r[2] or r[1] >= r[3]:
+                    e.append(f"{name}: bad rect {r!r}")
+        rng = {
+            "grid_step": (5, 500), "player_radius": (0, 800), "sticky_radius": (0, 2000),
+            "wait_interval": (0, 86400), "verify_delay": (0, 10), "verify_timeout": (0, 30),
+            "settle_delay": (0, 5), "right_click_delay": (0, 10),
+            "max_attempts": (1, 1000), "max_cycles": (0, 10**9), "max_consecutive_failed_cycles": (0, 10**6),
+            "verify_margin": (0, 400), "white_min": (0, 255), "white_max_spread": (0, 255),
+            "green_min_g": (0, 255), "green_min_delta": (0, 255), "diff_min": (0, 255),
+            "outline_dark_max": (0, 255), "outline_radius": (0, 10), "max_stroke_run": (0, 400),
+            "plate_w": (4, 800), "plate_h": (4, 200), "plate_min_white": (1, 10**6),
+            "marker_search": (0, 400), "marker_min_green": (0, 10**6), "template_min_score": (0, 1),
+        }
+        for name, (lo, hi) in rng.items():
+            v = getattr(self, name)
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not (lo <= v <= hi):
+                e.append(f"{name} must be a number in [{lo}, {hi}] (got {v!r})")
+        if isinstance(self.verify_timeout, (int, float)) and isinstance(self.verify_delay, (int, float))                 and self.verify_timeout < self.verify_delay:
+            e.append("verify_timeout must be >= verify_delay")
+        choices = {"order": ORDERS, "verify_mode": ("diff", "absolute"), "right_click_target": ("same", "park")}
+        for name, ok in choices.items():
+            if getattr(self, name) not in ok:
+                e.append(f"{name} must be one of {', '.join(ok)}")
+        if self.emergency_hotkey and self.emergency_hotkey.upper() not in VK_CODES:
+            e.append(f"emergency_hotkey must be one of {', '.join(VK_CODES)}")
+        if not self.dry_run and not self.emergency_hotkey and not self.corner_failsafe:
+            e.append("live mode needs an emergency hotkey or the corner failsafe")
+        if self.template_path and not Path(self.template_path).is_file():
+            e.append(f"template file not found: {self.template_path}")
+        return e
+
+
+def _coerce(v, default, name):
+    """Convert a JSON value to the type of the default (tuples, rect lists, bool, int, float, str)."""
+    if name in ("ui_rects", "verify_ignore_rects"):
+        return [tuple(int(x) for x in r) for r in v]
+    if isinstance(default, bool):
+        if not isinstance(v, bool):
+            raise TypeError(name)
+        return v
+    if isinstance(default, tuple):
+        out = tuple(int(x) for x in v)
+        if len(out) != len(default):
+            raise ValueError(name)
+        return out
+    if isinstance(default, int):
+        if isinstance(v, bool) or float(v) != int(float(v)):
+            raise ValueError(name)
+        return int(float(v))
+    if isinstance(default, float):
+        if isinstance(v, bool):
+            raise TypeError(name)
+        return float(v)
+    if isinstance(default, str):
+        if not isinstance(v, str):
+            raise TypeError(name)
+        return v
+    return v

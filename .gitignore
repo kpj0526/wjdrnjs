@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 logs/
 settings.json
+.build-venv/
+build/
+dist/
+settings.json.tmp

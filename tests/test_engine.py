@@ -60,6 +60,9 @@ class FakeGame:
         self.right_clicks.append((x, y))
         self.right_click_times.append(time.perf_counter())
 
+    def release(self):
+        self.released = True
+
     # capture interface
     def grab(self, m):
         assert (m.width, m.height) == (1600, 900)

@@ -1,7 +1,13 @@
 """The select -> verify -> right click -> wait loop.
 
-Screen capture, mouse, window mapping and the clock are injected so the whole
-loop runs offline in tests against synthetic frames.
+Screen capture, mouse, window mapping, the clock and the safety probes (hotkey, cursor,
+foreground window) are injected so the whole loop runs offline in tests.
+
+Timing of one cycle:
+    park cursor, baseline shot
+    repeat up to max_attempts: left click, park, wait verify_delay, check until verify_timeout
+    on success: wait right_click_delay, right click, park
+    wait_interval  <- measured from the end of the cycle to the start of the next one
 """
 from __future__ import annotations
 
@@ -9,18 +15,21 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
 from .candidates import Candidate, build_candidates
+from .capture import CaptureError
 from .config import Settings
-from .geometry import Mapping, resolve_mapping
+from .geometry import Mapping, WindowNotFound, is_foreground, monitor_top_left, resolve_mapping
 from .vision import VerifyResult, load_template, verify
-from .winput import DryRunMouse, cursor_pos, key_down
+from .winput import DryRunMouse, InputBlocked, cursor_pos, key_down
 
 log = logging.getLogger("r2clicker")
+
+# errors that end a run with a one-line message instead of a traceback
+EXPECTED_ERRORS = (WindowNotFound, CaptureError, InputBlocked)
 
 
 @dataclass
@@ -30,6 +39,7 @@ class CycleResult:
     candidate: Candidate | None = None
     verify: VerifyResult | None = None
     tried: list[tuple[int, int]] = field(default_factory=list)
+    skipped: str = ""  # non-empty: the cycle did not run (e.g. game not in foreground)
 
 
 class Bot:
@@ -40,19 +50,37 @@ class Bot:
         mouse=None,
         mapping_fn: Callable[[], tuple[Mapping, str]] | None = None,
         sleep: Callable[[float], None] | None = None,
+        hotkey_fn: Callable[[str], bool] = key_down,
+        cursor_fn: Callable[[], tuple[int, int] | None] = cursor_pos,
+        corner_fn: Callable[[int, int], tuple[int, int]] = monitor_top_left,
+        foreground_fn: Callable[[int], bool] = is_foreground,
     ) -> None:
         self.s = settings
         self.grab = grab
-        self.mouse = mouse or DryRunMouse()
+        mouse = mouse or DryRunMouse()
+        if settings.dry_run and getattr(mouse, "live", False):
+            log.warning("dry_run is on: ignoring the live mouse, no clicks will be sent")
+            mouse = DryRunMouse()
+        self.mouse = mouse
         self.mapping_fn = mapping_fn or (lambda: resolve_mapping(settings.window_title, settings.ref_w, settings.ref_h))
+        self.hotkey_fn = hotkey_fn
+        self.cursor_fn = cursor_fn
+        self.corner_fn = corner_fn
+        self.foreground_fn = foreground_fn
         self.stop_event = threading.Event()
+        self.stop_reason = ""
         self._sleep_override = sleep
         self.last_success: tuple[int, int] | None = None
         self._template_cache: tuple[str, float, np.ndarray | None] | None = None
 
+    @property
+    def live(self) -> bool:
+        return bool(getattr(self.mouse, "live", False))
+
     # --- helpers -----------------------------------------------------------
     def stop(self, why: str = "stop requested") -> None:
         if not self.stop_event.is_set():
+            self.stop_reason = why
             log.warning("STOP: %s", why)
         self.stop_event.set()
 
@@ -83,24 +111,37 @@ class Bot:
         t = load_template(path, self.s, scale)
         self._template_cache = (path, scale, t)
         if t is None:
-            log.warning("template %s has too few white pixels; falling back to box search", path)
+            log.warning("template %s not usable; falling back to box search", path)
         return t
 
     def _save_shot(self, img: np.ndarray, tag: str) -> None:
         if not self.s.save_failure_shots:
             return
-        from PIL import Image
+        try:
+            from PIL import Image
 
-        d = Path(self.s.log_dir) / "shots"
-        d.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(img).save(d / f"{time.strftime('%H%M%S')}_{tag}.png")
+            from .paths import resolve_in_data_dir
+
+            d = resolve_in_data_dir(self.s.log_dir) / "shots"
+            d.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(img).save(d / f"{time.strftime('%Y%m%d-%H%M%S')}_{tag}.png")
+        except Exception as e:  # a full disk must not stop the run
+            log.warning("could not save screenshot: %s", e)
+
+    def _game_ready(self, m: Mapping) -> bool:
+        """Live clicks only go to the game when it is the active window."""
+        return not self.live or self.foreground_fn(m.hwnd)
 
     # --- one cycle -----------------------------------------------------------
     def run_cycle(self) -> CycleResult:
         s = self.s
         m, desc = self.mapping_fn()
         log.debug("mapping: %s", desc)
+        if not self._game_ready(m):
+            return CycleResult(False, 0, skipped="game window is not in the foreground")
         park = m.to_screen(*s.park_point)
+        if not m.contains_screen(*park):
+            raise ValueError(f"park point {s.park_point} maps outside the game client")
         self.mouse.move(*park)
         if not self._sleep(s.settle_delay):
             return CycleResult(False, 0)
@@ -115,6 +156,11 @@ class Bot:
             if self.stop_event.is_set():
                 break
             sx, sy = m.to_screen(c.x, c.y)
+            if not m.contains_screen(sx, sy):
+                log.error("candidate ref(%d,%d) maps outside the client; skipped", c.x, c.y)
+                continue
+            if not self._game_ready(m):
+                return CycleResult(False, len(tried), None, res, tried, skipped="game window lost focus")
             tried.append((c.x, c.y))
             t_click = time.perf_counter()
             self.mouse.left_click(sx, sy)
@@ -148,22 +194,39 @@ class Bot:
     def run(self) -> None:
         s = self.s
         self.stop_event.clear()
-        mode = "LIVE" if getattr(self.mouse, "live", False) else "DRY-RUN"
-        log.info("start (%s): interval=%.3fs max_attempts=%d max_cycles=%s", mode, s.wait_interval,
-                 s.max_attempts, s.max_cycles or "inf")
+        self.stop_reason = ""
+        problems = s.validate()
+        if problems:
+            for p in problems:
+                log.error("invalid setting: %s", p)
+            self.stop("invalid settings")
+            return
+        log.info("start (%s): wait_interval=%.3fs max_attempts=%d max_cycles=%s", "LIVE" if self.live else "DRY-RUN",
+                 s.wait_interval, s.max_attempts, s.max_cycles or "inf")
         watchdog = threading.Thread(target=self._watchdog, daemon=True)
         watchdog.start()
         cycles = failed = 0
+        paused = False
         try:
             while not self.stop_event.is_set():
                 if s.max_cycles and cycles >= s.max_cycles:
+                    self.stop_reason = self.stop_reason or "max cycles reached"
                     log.info("max cycles reached")
                     break
-                cycles += 1
                 r = self.run_cycle()
                 t_end = time.perf_counter()
                 if self.stop_event.is_set():
                     break
+                if r.skipped:
+                    if not paused:
+                        log.warning("paused: %s (click the game window to resume)", r.skipped)
+                    paused = True
+                    self._sleep(0.5)
+                    continue
+                if paused:
+                    log.info("resumed")
+                    paused = False
+                cycles += 1
                 if r.success:
                     failed = 0
                 else:
@@ -174,26 +237,39 @@ class Bot:
                         break
                 if s.max_cycles and cycles >= s.max_cycles:
                     continue
-                log.info("waiting %.3fs", s.wait_interval)
+                log.info("waiting %.3fs before the next cycle", s.wait_interval)
                 if not self._wait_until(t_end + s.wait_interval):
                     break
-                log.debug("waited %.3fs", time.perf_counter() - t_end)
-        except Exception:
+        except EXPECTED_ERRORS as e:
+            self.stop(str(e))
+        except Exception as e:
             log.exception("run aborted by error")
+            self.stop(f"error: {e}")
         finally:
+            try:
+                self.mouse.release()  # never leave a mouse button held
+            except Exception as e:
+                log.error("mouse release failed: %s", e)
+            self.stop_reason = self.stop_reason or "stopped"
             self.stop_event.set()
-            log.info("stopped after %d cycles", cycles)
+            log.info("stopped after %d cycles (%s)", cycles, self.stop_reason)
 
     def _watchdog(self) -> None:
-        """Emergency stop: hotkey held, or cursor slammed into the top-left screen corner."""
+        """Emergency stop: hotkey held, or cursor pushed into the top-left corner of its monitor."""
         s = self.s
         while not self.stop_event.is_set():
-            if key_down(s.emergency_hotkey):
-                self.stop(f"emergency hotkey {s.emergency_hotkey}")
-                return
-            if s.corner_failsafe:
-                p = cursor_pos()
-                if p is not None and p[0] <= 2 and p[1] <= 2:
-                    self.stop("cursor in top-left corner (failsafe)")
+            try:
+                if s.emergency_hotkey and self.hotkey_fn(s.emergency_hotkey):
+                    self.stop(f"emergency hotkey {s.emergency_hotkey}")
                     return
+                if s.corner_failsafe:
+                    p = self.cursor_fn()
+                    if p is not None:
+                        cx, cy = self.corner_fn(*p)
+                        if p[0] - cx <= 2 and p[1] - cy <= 2:
+                            self.stop("cursor in top-left corner (failsafe)")
+                            return
+            except Exception as e:  # a broken probe must stop the run, not silently disable safety
+                self.stop(f"safety watchdog error: {e}")
+                return
             time.sleep(0.02)

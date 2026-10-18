@@ -31,6 +31,13 @@ class DryRunMouse:
     def right_click(self, x: int, y: int) -> None:
         self.actions.append(("right", x, y))
 
+    def release(self) -> None:
+        self.actions.append(("release",))
+
+
+class InputBlocked(RuntimeError):
+    """SendInput was rejected, typically because the game runs elevated (UIPI)."""
+
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -64,16 +71,27 @@ class Win32Mouse:
         self.press_s = press_s
         self._u = ctypes.windll.user32
 
+    def _send(self, flag: int) -> bool:
+        inp = _INPUT(type=0)
+        inp.mi = _MOUSEINPUT(0, 0, 0, flag, 0, 0)
+        return self._u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT)) == 1
+
     def _buttons(self, down: int, up: int) -> None:
-        for flag in (down, up):
-            inp = _INPUT(type=0)
-            inp.mi = _MOUSEINPUT(0, 0, 0, flag, 0, 0)
-            self._u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
-            if flag == down:
-                time.sleep(self.press_s)
+        if not self._send(down):
+            raise InputBlocked("SendInput was blocked; if the game runs as administrator, run this tool as administrator too")
+        try:
+            time.sleep(self.press_s)
+        finally:
+            self._send(up)  # never leave a button held down
+
+    def release(self) -> None:
+        """Send button-up for both buttons (recovery after an error or stop)."""
+        self._send(MOUSEEVENTF_LEFTUP)
+        self._send(MOUSEEVENTF_RIGHTUP)
 
     def move(self, x: int, y: int) -> None:
-        self._u.SetCursorPos(int(x), int(y))
+        if not self._u.SetCursorPos(int(x), int(y)):
+            raise InputBlocked(f"SetCursorPos({x}, {y}) failed")
 
     def left_click(self, x: int, y: int) -> None:
         self.move(x, y)

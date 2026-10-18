@@ -176,3 +176,120 @@ def test_persistent_printwindow_failure_is_reported(monkeypatch):
     Stub(monkeypatch, [CaptureError("PrintWindow failed for the game window")])
     with pytest.raises(CaptureError, match="PrintWindow failed"):
         Grabber("window").grab(M)
+
+
+# --- PrintWindow refused (customer: "PrintWindow failed for the game window") -------------------
+
+REFUSED = CaptureError("PrintWindow failed for the game window")
+
+
+def test_auto_falls_back_to_screen_when_printwindow_is_refused(monkeypatch, caplog):
+    st = Stub(monkeypatch, [REFUSED])
+    g = Grabber("auto")
+    st.screen(g, monkeypatch)
+    with caplog.at_level("WARNING", logger="r2clicker"):
+        assert (g.grab(M) == SCREEN).all()
+    assert g.last_backend == "screen"
+    assert st.print_calls == 4  # fast + full-content mode, each with its one immediate retry
+    assert [r.message for r in caplog.records if "window capture unusable" in r.message]
+    calls = st.print_calls
+    for _ in range(3):  # until the re-probe: screen only, no repeated failing PrintWindow calls
+        g.grab(M)
+    assert st.print_calls == calls and st.screen_calls == 4
+    assert len([r for r in caplog.records if "window capture unusable" in r.message]) == 1
+
+
+def test_auto_returns_to_window_capture_when_printwindow_works_again(monkeypatch):
+    st = Stub(monkeypatch, [REFUSED, REFUSED, REFUSED, REFUSED, CONTENT])
+    now = [50.0]
+    monkeypatch.setattr(capture.time, "monotonic", lambda: now[0])
+    g = Grabber("auto")
+    st.screen(g, monkeypatch)
+    g.grab(M)
+    assert g.last_backend == "screen"
+    now[0] += capture.REPROBE_S + 0.1
+    assert (g.grab(M) == CONTENT).all() and g.last_backend == "window"
+
+
+def test_refused_fast_mode_uses_full_content_mode(monkeypatch):
+    def frame(flags):
+        if flags == FULL:
+            return CONTENT
+        raise REFUSED
+
+    st = Stub(monkeypatch, [frame])
+    g = Grabber("auto")
+    st.screen(g, monkeypatch)
+    assert (g.grab(M) == CONTENT).all() and g.last_backend == "window" and st.screen_calls == 0
+    assert g._pw_flags[M.hwnd] == FULL
+
+
+@pytest.mark.parametrize("cover", [
+    WinInfo(77, "R2 target helper 0.1.0", (150, 60, 300, 120)),   # the helper itself (not excluded)
+    WinInfo(9, "Some browser", (100, 50, 400, 300)),
+])
+def test_screen_fallback_still_refuses_overlapping_windows(monkeypatch, cover):
+    st = Stub(monkeypatch, [REFUSED], above=[cover])
+    g = Grabber("auto")
+    st.screen(g, monkeypatch)
+    g.own.add(77)
+    with pytest.raises(CaptureError, match=f"covered by '{cover.title}'"):
+        g.grab(M)
+    assert st.screen_calls == 0  # no screen pixels were taken
+
+
+def test_explicit_window_backend_keeps_an_understandable_error(monkeypatch):
+    Stub(monkeypatch, [REFUSED])
+    with pytest.raises(CaptureError) as ei:
+        Grabber("window").grab(M)
+    msg = str(ei.value)
+    assert "Windows refused PrintWindow" in msg and "fast mode" in msg and "full-content mode" in msg
+    assert "'auto'" in msg
+
+
+def test_real_printwindow_refusal_falls_back(monkeypatch, tk_root):
+    """The real print_window code path (GetDC, DIB section, cleanup) with Win32 PrintWindow
+    returning 0, as on the customer's PC."""
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("Windows only")
+    import tkinter as tk
+
+    top = tk.Toplevel(tk_root)
+    top.geometry("200x120+50+50")
+    top.update()
+    hwnd = int(top.wm_frame(), 16)
+    m = Mapping(top.winfo_rootx(), top.winfo_rooty(), top.winfo_width(), top.winfo_height(), hwnd=hwnd)
+    calls = []
+    monkeypatch.setattr(capture._u32, "PrintWindow", lambda *a: calls.append(1) or 0)
+    try:
+        with pytest.raises(CaptureError, match="Windows refused PrintWindow"):
+            Grabber("window").grab(m)
+        g = Grabber("auto")
+        monkeypatch.setattr(capture, "windows_above", lambda h: [])
+        shot = np.full((m.height, m.width, 3), 9, np.uint8)
+        monkeypatch.setattr(g, "_mss_grab", lambda mm: shot)
+        assert (g.grab(m) == shot).all() and g.last_backend == "screen"
+        assert len(calls) == 4 + 4  # window backend attempt + auto attempt
+    finally:
+        top.destroy()
+
+
+def test_engine_keeps_running_when_printwindow_is_refused(monkeypatch, base_img):
+    """End to end: with PrintWindow refused, an auto-backend run still selects via screen capture."""
+    import sys
+
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from test_engine import FakeGame, fast_settings
+
+    from r2clicker.engine import Bot
+
+    game = FakeGame(base_img)
+    m = Mapping(game.m.left, game.m.top, 1600, 900, hwnd=4242)
+    Stub(monkeypatch, [REFUSED])
+    g = Grabber("auto")
+    monkeypatch.setattr(g, "_mss_grab", lambda mm: game.grab(mm))
+    bot = Bot(fast_settings(), g.grab, game, mapping_fn=lambda: (m, "fake"))
+    r = bot.run_cycle()
+    assert r.success and game.right_clicks and g.last_backend == "screen"

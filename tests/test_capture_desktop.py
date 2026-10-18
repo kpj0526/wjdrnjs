@@ -125,7 +125,11 @@ def helper_app(tk_root, tmp_path, monkeypatch):
     app.errors = errors
     top.geometry("+120+120")  # App centres itself; put it deliberately over the target again
     top.update()
-    time.sleep(0.3)
+    time.sleep(0.6)  # let the App's 400 ms bring-to-front topmost phase end (its after() drops topmost)
+    top.update()
+    top.attributes("-topmost", True)  # then make the helper deliberately cover the (topmost) target
+    top.update()
+    time.sleep(0.2)
     top.update()
     yield app
     app.on_close()

@@ -21,6 +21,7 @@ A mapping with hwnd 0 (whole primary screen, empty title) always uses the screen
 from __future__ import annotations
 
 import ctypes
+import logging
 import sys
 import threading
 import time
@@ -29,6 +30,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .geometry import Mapping
+
+log = logging.getLogger("r2clicker")
 
 BACKENDS = ("auto", "window", "screen")
 REPROBE_S = 10.0
@@ -257,32 +260,52 @@ class Grabber:
         except CaptureError:  # PrintWindow occasionally fails once while the window is busy
             return print_window(m.hwnd, m.width, m.height, flags)
 
-    def _window_frame(self, m: Mapping) -> np.ndarray | None:
+    def _window_frame(self, m: Mapping) -> tuple[np.ndarray | None, list[str]]:
+        """(frame, []) from the first PrintWindow mode that gives real content, else (None, reasons).
+
+        A mode that fails (PrintWindow/GetDC refused even after one retry) or returns a blank frame
+        just counts as unusable; the caller decides between the next option and an error.
+        """
         known = self._pw_flags.get(m.hwnd)
         modes = [known] + [f for f in PW_MODES if f != known] if known else list(PW_MODES)
+        reasons = []
         for flags in modes:
-            img = self._print(m, flags)
+            name = "full-content" if flags & PW_RENDERFULLCONTENT else "fast"
+            try:
+                img = self._print(m, flags)
+            except CaptureError as e:
+                reasons.append(f"{name} mode: {e}")
+                continue
             if not is_blank(img):
                 self._pw_flags[m.hwnd] = flags
-                return img
+                return img, []
+            reasons.append(f"{name} mode: blank image")
         self._pw_flags.pop(m.hwnd, None)
-        return None
+        return None, reasons
 
     def _grab(self, m: Mapping) -> np.ndarray:
         if not m.hwnd or self.backend == "screen":
             return self._screen(m)
         since = self._screen_since.get(m.hwnd)
         if self.backend == "window" or since is None or time.monotonic() - since >= REPROBE_S:
-            img = self._window_frame(m)
+            img, reasons = self._window_frame(m)
             if img is not None:
                 self._screen_since.pop(m.hwnd, None)
                 self.last_backend = "window"
                 return img
             if self.backend == "window":
+                refused = any("blank" not in r for r in reasons)
                 raise CaptureError(
-                    "window capture returned a blank image (the game may use hardware rendering that "
-                    "PrintWindow cannot read, or it is minimized); set the capture backend to 'auto' or 'screen'"
+                    ("window capture failed: Windows refused PrintWindow for the game window"
+                     if refused else
+                     "window capture returned a blank image (the game may use hardware rendering that "
+                     "PrintWindow cannot read, or it is minimized)")
+                    + f" [{'; '.join(reasons)}]; set the capture backend to 'auto' (falls back to screen "
+                    "capture) or 'screen'"
                 )
+            if since is None:
+                log.warning("window capture unusable (%s); using screen capture, retrying window "
+                            "capture every %.0f s", "; ".join(reasons), REPROBE_S)
             self._screen_since[m.hwnd] = time.monotonic()
         return self._screen(m)
 

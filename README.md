@@ -121,8 +121,8 @@ capture. The **Capture backend** setting controls how frames are taken:
 
 | Backend | How | When something overlaps the game |
 |---|---|---|
-| `auto` (default) | `window` first. If that returns a blank frame (retried once), falls back to `screen` and tries `window` again every 10 s. | as below |
-| `window` | `PrintWindow` (fast `PW_CLIENTONLY`, or `+PW_RENDERFULLCONTENT` when the fast mode is blank): the game window renders its own client area into memory. |\| PW_RENDERFULLCONTENT)`: the game window renders its own client area into memory. | Not included. The window's own pixels come back even when covered. A blank result (some DirectX/OpenGL games and hardware-accelerated browsers) is an error, never used. |
+| `auto` (default) | `window` first. If every `PrintWindow` mode is refused by Windows (each retried once) or returns a blank frame, falls back to `screen`, logs why once, and tries `window` again every 10 s. | as below |
+| `window` | `PrintWindow` (fast `PW_CLIENTONLY`, or `+PW_RENDERFULLCONTENT` when the fast mode is refused or blank): the game window renders its own client area into memory. |\| PW_RENDERFULLCONTENT)`: the game window renders its own client area into memory. | Not included. The window's own pixels come back even when covered. If Windows refuses `PrintWindow` ("PrintWindow failed for the game window"), or the result is blank (some DirectX/OpenGL games and hardware-accelerated browsers), that is an error naming each mode's result, never a frame. |
 | `screen` | Screen pixels via mss. | Before every grab, the windows above the game are checked. If one overlaps the client area, the grab fails and names that window. |
 
 The helper's own window is shown normally and is **not** hidden from capture by default:

@@ -40,6 +40,7 @@ class FakeGame:
         self.left_clicks = []
         self.right_clicks = []
         self.right_click_times = []
+        self.grab_times = []
 
     def _on_mob(self, x, y):
         rx, ry = self.m.to_ref(x, y)
@@ -63,6 +64,7 @@ class FakeGame:
     def grab(self, m):
         assert (m.width, m.height) == (1600, 900)
         self.frames += 1
+        self.grab_times.append(time.perf_counter())
         img = self.base_img.copy()
         if self._on_mob(*self.cursor):
             draw_nameplate(img, (self.mob[0], self.mob[1] - 60), markers=False)  # hover label
@@ -138,8 +140,11 @@ def test_wait_interval_is_respected(base_img):
     game = FakeGame(base_img)
     make_bot(game, fast_settings(wait_interval=0.4, max_cycles=3, sticky_radius=120)).run()
     assert len(game.right_click_times) == 3
-    gaps = np.diff(game.right_click_times)
-    assert all(0.39 <= g <= 0.9 for g in gaps), gaps
+    # The interval runs from the end of a cycle (its right click) to the start of the next cycle
+    # (its baseline screenshot). Right-click-to-right-click would also include the next cycle's
+    # capture/scoring/verify work, which depends on machine load.
+    waits = [min(g for g in game.grab_times if g > t) - t for t in game.right_click_times[:-1]]
+    assert all(0.4 <= w <= 0.4 + 0.2 for w in waits), waits
 
 
 def test_stop_interrupts_wait(base_img):

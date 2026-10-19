@@ -136,6 +136,6 @@ def test_older_right_click_timing_is_replaced_by_the_new_defaults(tmp_path, data
 
 def test_current_right_click_timing_is_kept(tmp_path):
     p = tmp_path / "s.json"
-    Settings(right_click_delay=0.2, right_click_hover=0.05).save(p)
+    Settings(right_click_delay=0.2, right_click_hover=0.05, right_click_press=0.3).save(p)
     s = Settings.load(p)
-    assert (s.right_click_delay, s.right_click_hover) == (0.2, 0.05)
+    assert (s.right_click_delay, s.right_click_hover, s.right_click_press) == (0.2, 0.05, 0.3)

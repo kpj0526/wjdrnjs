@@ -55,6 +55,7 @@ FORM = [
     ("verify_timeout", "Give up nameplate check after (s)", "float"),
     ("right_click_delay", "Delay before right click (s)", "float"),
     ("right_click_hover", "Rest on target before right click (s)", "float"),
+    ("right_click_press", "Right button press time (s)", "float"),
     ("max_attempts", "Max left clicks per cycle", "int"),
     ("max_cycles", "Max cycles (0=unlimited)", "int"),
     ("max_consecutive_failed_cycles", "Stop after N empty cycles", "int"),
@@ -723,7 +724,7 @@ class App:
             # refused start and leave the GUI usable instead of letting a Tk
             # callback traceback escape with no visible explanation.
             try:
-                mouse = Win32Mouse(right_hover_s=s.right_click_hover)
+                mouse = Win32Mouse(right_hover_s=s.right_click_hover, right_press_s=s.right_click_press)
             except Exception as e:
                 log.exception("could not initialise live mouse input")
                 messagebox.showerror("Live mode unavailable", str(e))
@@ -731,7 +732,8 @@ class App:
         else:
             mouse = DryRunMouse()
         self.grabber.backend = s.capture_backend
-        log.info("wait after right click -> next cycle: %.3f s", s.wait_interval)
+        log.info("wait after right click -> next cycle: %.3f s; right button press %.3f s",
+                 s.wait_interval, s.right_click_press)
         if s.manual_points:
             log.info("using %d manual points in list order (automatic grid off)", len(s.manual_points))
         self.bot = Bot(s, self.grabber.grab, mouse)

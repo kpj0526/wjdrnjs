@@ -63,6 +63,7 @@ class Settings:
     settle_delay: float = 0.08        # after moving cursor off, before the baseline shot
     right_click_delay: float = 0.0    # between successful verification and right click (0 = at once)
     right_click_hover: float = 0.03   # cursor rests on the target this long before the right click
+    right_click_press: float = 0.15   # how long the right button is held down (left: 0.03)
 
     # --- limits ---
     max_attempts: int = 30            # left clicks per cycle before giving up the cycle
@@ -225,7 +226,7 @@ class Settings:
             "grid_step": (5, 500), "player_radius": (0, 800), "sticky_radius": (0, 2000),
             "wait_interval": (0, 86400), "verify_delay": (0, 10), "verify_timeout": (0, 30),
             "settle_delay": (0, 5), "right_click_delay": (0, 10),
-            "right_click_hover": (0, 2), "plate_max_distance": (0, 2000),
+            "right_click_hover": (0, 2), "right_click_press": (0.01, 2), "plate_max_distance": (0, 2000),
             "max_attempts": (1, 1000), "max_cycles": (0, 10**9), "max_consecutive_failed_cycles": (0, 10**6),
             "verify_margin": (0, 400), "white_min": (0, 255), "white_max_spread": (0, 255),
             "green_min_g": (0, 255), "green_min_delta": (0, 255), "diff_min": (0, 255),

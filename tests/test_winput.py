@@ -44,7 +44,7 @@ class FakeUser32:
 
 @pytest.fixture
 def mouse(monkeypatch):
-    m = winput.Win32Mouse(right_hover_s=0.08)
+    m = winput.Win32Mouse(right_hover_s=0.08, right_press_s=0.12)
     m._u = FakeUser32()
     monkeypatch.setattr(winput, "cursor_pos", lambda: (1500, 300))
     return m
@@ -68,7 +68,7 @@ def test_right_click_rests_on_target_then_clicks_like_the_left_click(mouse):
     pinned = next(e[0] for e in mouse._u.events if e[1] == "pos")
     down, up = mouse._u.time_of(RIGHT_DOWN), mouse._u.time_of(RIGHT_UP)
     assert down - pinned >= 0.08 - 0.005  # the configured rest
-    assert 0.03 - 0.005 <= up - down < 0.1  # a quick click: long enough for one game frame, never a hold
+    assert 0.12 - 0.005 <= up - down < 0.12 + 0.08  # the configured right press time
 
 
 def test_left_click_is_unchanged(mouse):
@@ -98,10 +98,22 @@ def test_blocked_glide_raises_input_blocked_and_never_presses(monkeypatch):
 
 def test_right_click_timing_settings_validate():
     assert Settings().validate() == []
-    errs = Settings(right_click_hover=5).validate()
-    assert any("right_click_hover" in e for e in errs)
+    errs = Settings(right_click_hover=5, right_click_press=0).validate()
+    assert any("right_click_hover" in e for e in errs) and any("right_click_press" in e for e in errs)
 
 
 def test_gui_form_offers_the_right_click_timing():
     names = [f[0] for f in gui.FORM]
-    assert "right_click_hover" in names and "right_click_hold" not in names
+    assert "right_click_hover" in names and "right_click_press" in names
+
+
+def test_default_right_press_is_longer_than_the_left_click(monkeypatch):
+    assert Settings().right_click_press == 0.15
+    m = winput.Win32Mouse()
+    m._u = FakeUser32()
+    monkeypatch.setattr(winput, "cursor_pos", lambda: (900, 500))
+    m.left_click(900, 500)
+    m.right_click(900, 500)
+    left = m._u.time_of(LEFT_UP) - m._u.time_of(LEFT_DOWN)
+    right = m._u.time_of(RIGHT_UP) - m._u.time_of(RIGHT_DOWN)
+    assert left < 0.1 and 0.15 - 0.005 <= right < 0.15 + 0.08, (left, right)

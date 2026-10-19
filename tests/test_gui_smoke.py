@@ -588,11 +588,12 @@ def test_live_start_uses_the_typed_right_click_timing(app, monkeypatch):
         "B", (), {"run": lambda self: None, "stop": lambda self, why="": None, "stop_reason": ""})())
     app.vars["window_title"][0].set("")
     app.vars["right_click_hover"][0].set("0.2")  # typed, no Apply/Enter
+    app.vars["right_click_press"][0].set("0.4")
     app.dry_var.set(False)
     app.start()
     if app.thread:
         app.thread.join(2)
-    assert made == [{"right_hover_s": 0.2}]
+    assert made == [{"right_hover_s": 0.2, "right_press_s": 0.4}]
 
 
 @pytest.mark.parametrize("dry, activated", [(False, [4321]), (True, [])])

@@ -67,8 +67,8 @@ GLIDE_STEPS = 4  # SendInput moves on the way to the right-click target
 class Win32Mouse:
     """Real input. Moves with SetCursorPos, then sends button down/up via SendInput.
 
-    Both buttons are clicked the same way: down, press_s (30 ms, a quick finger click; a down
-    and up with no gap is missed by games that read the button state once per frame), up.
+    The left button is pressed for press_s (30 ms), the right button for right_press_s
+    (default 0.15 s, adjustable: some games only notice a right press that lasts a few frames).
     The right click first glides back onto the target with real SendInput mouse moves when the
     cursor is elsewhere (it was parked after the left click; some games only update what is
     under the cursor from mouse-move input, not from SetCursorPos) and rests right_hover_s.
@@ -76,11 +76,12 @@ class Win32Mouse:
 
     live = True
 
-    def __init__(self, press_s: float = 0.03, right_hover_s: float = 0.03) -> None:
+    def __init__(self, press_s: float = 0.03, right_hover_s: float = 0.03, right_press_s: float = 0.15) -> None:
         if sys.platform != "win32":
             raise RuntimeError("live input is only supported on Windows")
         self.press_s = press_s
         self.right_hover_s = right_hover_s
+        self.right_press_s = right_press_s
         self._u = ctypes.windll.user32
 
     def _send(self, flag: int, dx: int = 0, dy: int = 0) -> bool:
@@ -88,11 +89,11 @@ class Win32Mouse:
         inp.mi = _MOUSEINPUT(dx, dy, 0, flag, 0, 0)
         return self._u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT)) == 1
 
-    def _buttons(self, down: int, up: int) -> None:
+    def _buttons(self, down: int, up: int, press_s: float | None = None) -> None:
         if not self._send(down):
             raise InputBlocked("SendInput was blocked; if the game runs as administrator, run this tool as administrator too")
         try:
-            time.sleep(self.press_s)
+            time.sleep(self.press_s if press_s is None else press_s)
         finally:
             self._send(up)  # never leave a button held down
 
@@ -134,7 +135,7 @@ class Win32Mouse:
             self.glide(x, y)
         if self.right_hover_s > 0:
             time.sleep(self.right_hover_s)  # let the game see the cursor on the mob before clicking
-        self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
+        self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, self.right_press_s)
 
 
 def cursor_pos() -> tuple[int, int] | None:

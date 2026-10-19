@@ -34,9 +34,8 @@ If the folder is not writable (e.g. under Program Files), settings and logs go t
 %LOCALAPPDATA%\R2TargetHelper instead. "Open data folder" shows where.
 
 After a left click the tool checks that the mob is selected (white nameplate with green
-markers, near the clicked point), then right clicks it at once. Both buttons are clicked
-the same way (30 ms press). If the game ignores the right click, raise
-"Delay before right click" (e.g. 0.1).
+markers, near the clicked point), then right clicks it at once. If the game ignores the
+right click, raise "Right button press time" (default 0.15, e.g. 0.3).
 
 If the game runs as administrator, run this tool as administrator too, or Windows
 blocks its clicks (the log then says "SendInput was blocked").

@@ -104,8 +104,7 @@ problem and does nothing, and the previous valid settings stay in effect.
    | Delay before right click | `right_click_delay` | Between a successful check and the right click (default 0: at once). |
    | Rest on target before right click | `right_click_hover` | The cursor was parked after the left click; the right click glides back onto the point with real mouse-move input and rests this long first (default 0.03). |
 
-   Both buttons are clicked the same way: pressed 30 ms (a quick finger click), then released.
-   A press with no gap at all is missed by games that read the button state once per frame.
+   | Right button press time | `right_click_press` | How long the right button is held down (default 0.15; the left button 0.03). Raise it if the game ignores the right click. |
 
    Note that the time from one right click to the next is `wait_interval` *plus* the next
    cycle's own work: screenshot, scoring, and one check per attempt (about 0.1 s each, plus

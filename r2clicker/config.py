@@ -14,7 +14,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 REF_W, REF_H = 1600, 900
-SETTINGS_VERSION = 3  # 2: hide_helper_from_capture is an explicit opt-in; 3: plain auto clicker
+SETTINGS_VERSION = 4  # 2: hide_helper_from_capture is an explicit opt-in; 3: plain auto clicker;
+                      # 4: right click right after the left click (no hover rest by default)
 
 Rect = tuple[int, int, int, int]  # x1, y1, x2, y2 (x2/y2 exclusive)
 Point = tuple[int, int]
@@ -28,7 +29,7 @@ REMOVED_KEYS = frozenset({
     "verify_mode", "verify_margin", "white_min", "white_max_spread", "green_min_g", "green_min_delta",
     "diff_min", "require_outline", "outline_dark_max", "outline_radius", "max_stroke_run",
     "verify_ignore_rects", "plate_w", "plate_h", "plate_min_white", "marker_search", "marker_min_green",
-    "template_path", "template_min_score", "save_failure_shots",
+    "template_path", "template_min_score", "save_failure_shots", "right_click_hold",
 })
 
 
@@ -50,8 +51,7 @@ class Settings:
     wait_interval: float = 5.0        # from the last right click of a cycle to the first left click of the next
     right_click_delay: float = 0.0    # between a point's left click and its right click
     point_delay: float = 0.1          # between one point's right click and the next point's left click
-    right_click_hover: float = 0.03   # cursor rests on the point this long before the right press
-    right_click_hold: float = 0.1     # right button held this long (games polling per frame miss shorter)
+    right_click_hover: float = 0.0    # optional rest on the point before the right click
 
     # --- limits ---
     max_cycles: int = 0               # 0 = unlimited
@@ -117,6 +117,8 @@ class Settings:
         # before version 3, right_click_delay was the pause after a nameplate check, not the gap
         # between left and right click: the new default (right away) applies instead
         skip = {"right_click_delay"} if version < 3 else set()
+        if version < 4:  # 0.2.0 saved a 0.03 s rest as its default; the right click is now immediate
+            skip.add("right_click_hover")
         for f in fields(cls):
             if f.name not in data or f.name in _INTERNAL or f.name in skip:
                 continue
@@ -163,7 +165,7 @@ class Settings:
             e.append("reference size must be positive")
         rng = {
             "wait_interval": (0, 86400), "right_click_delay": (0, 10), "point_delay": (0, 60),
-            "right_click_hover": (0, 2), "right_click_hold": (0.01, 2), "max_cycles": (0, 10**9),
+            "right_click_hover": (0, 2), "max_cycles": (0, 10**9),
         }
         for name, (lo, hi) in rng.items():
             v = getattr(self, name)

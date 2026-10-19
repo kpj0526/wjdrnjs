@@ -23,8 +23,8 @@ click points, in order, then waits. It does not look at the screen.
    The game window is brought to the front by itself; clicks only go to the game while it
    is the active window.
 
-If the game ignores the right click, raise "Hold right button" (e.g. 0.3) and
-"Rest on point before right press" (e.g. 0.1).
+The right click is a plain click (pressed and released at once, never held).
+If the game ignores it, raise "Rest on point before right click" (e.g. 0.1).
 
 Updating: unzip the new version over the old folder. The zip has no settings.json,
 so your settings and click points are kept. In a new folder, copy the old settings.json into it.

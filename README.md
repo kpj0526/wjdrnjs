@@ -42,11 +42,12 @@ the installation offline.
 | Wait after the last point -> next cycle | `wait_interval` | 5.0 | From the last right click of a cycle to the first left click of the next. |
 | Left click -> right click | `right_click_delay` | 0 | Gap between a point's left and right click. |
 | Pause between points | `point_delay` | 0.1 | From one point's right click to the next point's left click. |
-| Rest on point before right press | `right_click_hover` | 0.03 | The right click moves onto the point with real mouse-move input and waits this long before pressing. |
-| Hold right button | `right_click_hold` | 0.1 | How long the right button stays down. Raise it (e.g. 0.3) if the game ignores the right click. |
+| Rest on point before right click | `right_click_hover` | 0 | Optional rest on the point before the right click. |
 | Max cycles | `max_cycles` | 0 | 0 = until stopped. |
 
-The left click holds its button 30 ms. All times are in seconds; Stop and F12 interrupt any wait.
+The right click goes out right after the left click's button-up, on the same point, as a plain
+click: button down and up are sent together, never held. The left
+click holds its button 30 ms. All times are in seconds; Stop and F12 interrupt any wait.
 
 ## Run from source
 

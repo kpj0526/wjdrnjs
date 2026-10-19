@@ -81,7 +81,7 @@ def test_right_click_follows_left_click_after_right_click_delay():
 
 
 def test_right_click_right_away_by_default():
-    assert Settings().right_click_delay == 0
+    assert Settings().right_click_delay == 0 and Settings().right_click_hover == 0
     game = FakeGame()
     make_bot(game, fast_settings(manual_points=[(600, 300)], right_click_delay=Settings().right_click_delay)).run_cycle()
     (_, t1), (_, t2) = game.times

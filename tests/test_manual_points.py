@@ -59,7 +59,8 @@ def test_old_release_file_keeps_points_and_wait_and_drops_nameplate_settings(tmp
     """A settings.json written by 0.1.x (as on the customer's PC) loads into the auto clicker."""
     old = {"window_title": "R2", "wait_interval": 3.0, "manual_points": [list(p) for p in PTS],
            "roi": [350, 130, 1250, 670], "marker_min_green": 60, "max_attempts": 30, "verify_mode": "diff",
-           "right_click_delay": 0.1, "park_point": [1480, 300], "settings_version": 2, "dry_run": False}
+           "right_click_delay": 0.1, "park_point": [1480, 300], "settings_version": 2, "dry_run": False,
+           "right_click_hold": 0.15}
     p = tmp_path / "settings.json"
     p.write_text(json.dumps(old), encoding="utf-8")
     s = Settings.load(p)
@@ -69,7 +70,16 @@ def test_old_release_file_keeps_points_and_wait_and_drops_nameplate_settings(tmp
     assert s.validate() == []
     s.save(p)
     d = json.loads(p.read_text(encoding="utf-8"))
-    assert "roi" not in d and "marker_min_green" not in d and d["settings_version"] == SETTINGS_VERSION
+    assert "roi" not in d and "marker_min_green" not in d and "right_click_hold" not in d
+    assert d["settings_version"] == SETTINGS_VERSION
+
+
+def test_hover_rest_saved_by_0_2_0_is_dropped(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"settings_version": 3, "right_click_hover": 0.03, "right_click_delay": 0.2}),
+                 encoding="utf-8")
+    s = Settings.load(p)
+    assert s.right_click_hover == 0 and s.right_click_delay == 0.2
 
 
 def test_right_click_delay_of_a_current_file_is_kept(tmp_path):

@@ -19,7 +19,6 @@ def test_defaults_are_valid_once_there_are_points():
         (dict(wait_interval=float("nan")), "wait_interval"),
         (dict(right_click_delay=-0.1), "right_click_delay"),
         (dict(point_delay=100), "point_delay"),
-        (dict(right_click_hold=0), "right_click_hold"),
         (dict(right_click_hover=5), "right_click_hover"),
         (dict(max_cycles=-1), "max_cycles"),
         (dict(capture_backend="gdi"), "capture_backend"),

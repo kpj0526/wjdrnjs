@@ -551,12 +551,11 @@ def test_live_start_uses_the_typed_right_click_timing(app, monkeypatch):
     _click(app, 600, 300)
     app.vars["window_title"][0].set("")
     app.vars["right_click_hover"][0].set("0.2")  # typed, no Apply/Enter
-    app.vars["right_click_hold"][0].set("0.3")
     app.dry_var.set(False)
     app.start()
     if app.thread:
         app.thread.join(2)
-    assert made == [{"right_hover_s": 0.2, "right_hold_s": 0.3}]
+    assert made == [{"right_hover_s": 0.2}]
 
 
 @pytest.mark.parametrize("dry, activated", [(False, [4321]), (True, [])])

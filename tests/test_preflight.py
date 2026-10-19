@@ -1,4 +1,4 @@
-"""Preflight checks (offline: the window lookup, capture and Win32 probes are faked) and the
+"""Preflight checks (offline: the window lookup and Win32 probes are faked) and the
 settings-file safety it relies on. Nothing here opens a window or clicks."""
 import json
 import os
@@ -6,31 +6,25 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from r2clicker.capture import CaptureError
 from r2clicker.config import Settings
 from r2clicker.geometry import Mapping, WindowNotFound
 from r2clicker.preflight import FAIL, OK, WARN, run_preflight
-
-from test_engine import FakeGame, fast_settings, make_bot
 
 ROOT = Path(__file__).resolve().parent.parent
 GAME = Mapping(200, 50, 1600, 900, hwnd=1234)
 
 
-def pf(s=None, frame=None, live=False, mapping=GAME, **kw):
-    """run_preflight against a fake game window showing `frame` (the sample screenshot by default)."""
-    from conftest import FIXTURE
-    from PIL import Image
+PTS = [(600, 300), (1000, 250)]
 
-    img = np.asarray(Image.open(FIXTURE).convert("RGB")) if frame is None else frame
+
+def pf(s=None, live=False, mapping=GAME, **kw):
+    """run_preflight against a fake game window."""
     fakes = dict(resolve=lambda t, w, h: (mapping, f"fake '{t}'"), dpi_awareness=lambda: 2, dpi_of=lambda h: 96,
-                 me_elevated=lambda: False, game_elevated=lambda h: False, grab=lambda m: img)
+                 me_elevated=lambda: False, game_elevated=lambda h: False)
     fakes.update(kw)
-    grab = fakes.pop("grab")
-    return run_preflight(s or Settings(), grab, live, **fakes)
+    return run_preflight(s or Settings(manual_points=PTS), live, **fakes)
 
 
 def status(r, name):
@@ -40,8 +34,8 @@ def status(r, name):
 def test_all_good_passes_and_reports_every_item():
     r = pf()
     assert r.ok, r.text()
-    assert [i.name for i in r.items] == ["mode", "settings", "game window", "DPI", "client size", "capture",
-                                         "candidates", "admin rights"]
+    assert [i.name for i in r.items] == ["mode", "settings", "game window", "DPI", "client size",
+                                         "click points", "admin rights"]
     assert "DRY RUN" in r.items[0].message and r.text().startswith("PREFLIGHT PASSED")
 
 
@@ -61,23 +55,14 @@ def test_window_not_found_fails_with_guidance():
 
 def test_invalid_settings_stop_before_touching_the_window():
     called = []
-    r = pf(Settings(manual_points=[(800, 440)]), resolve=lambda *a: called.append(1))
+    r = pf(Settings(manual_points=[(1700, 440)]), resolve=lambda *a: called.append(1))
     assert not r.ok and status(r, "settings") == [FAIL] and not called
-    assert "manual point 1" in r.failures[0].message
+    assert "click point 1" in r.failures[0].message
 
 
-@pytest.mark.parametrize("err", [CaptureError("the game window is covered by 'Notepad'"), OSError("boom")])
-def test_capture_errors_fail(err):
-    def broken(m):
-        raise err
-
-    r = pf(grab=broken)
-    assert not r.ok and status(r, "capture") == [FAIL] and str(err) in r.failures[0].message
-
-
-def test_blank_frame_fails():
-    r = pf(frame=np.zeros((900, 1600, 3), np.uint8), live=True)
-    assert not r.ok and status(r, "capture") == [FAIL] and "blank" in r.failures[0].message
+def test_no_click_points_fails():
+    r = pf(Settings())
+    assert not r.ok and "no click points" in r.failures[0].message
 
 
 def test_dpi_unaware_process_fails():
@@ -91,32 +76,20 @@ def test_system_aware_on_scaled_monitor_warns():
 
 
 def test_tiny_client_fails_and_wrong_aspect_warns():
-    small = Mapping(0, 0, 400, 300, hwnd=1)
-    r = pf(mapping=small, frame=np.random.default_rng(0).integers(0, 255, (300, 400, 3), np.uint8))
+    r = pf(mapping=Mapping(0, 0, 400, 300, hwnd=1))
     assert status(r, "client size") == [FAIL]
-    square = Mapping(0, 0, 1200, 900, hwnd=1)
-    r = pf(mapping=square, frame=np.random.default_rng(0).integers(0, 255, (900, 1200, 3), np.uint8))
+    r = pf(mapping=Mapping(0, 0, 1200, 900, hwnd=1))
     assert r.ok and status(r, "client size") == [WARN]
 
 
 def test_scaled_16_9_client_is_ok():
-    from conftest import FIXTURE
-    from PIL import Image
-
-    big = np.asarray(Image.open(FIXTURE).convert("RGB").resize((1920, 1080)))
-    r = pf(mapping=Mapping(0, 0, 1920, 1080, hwnd=1), frame=big)
+    r = pf(mapping=Mapping(0, 0, 1920, 1080, hwnd=1))
     assert r.ok and status(r, "client size") == [OK]
 
 
-def test_no_candidates_fails():
-    s = Settings(ui_rects=[(0, 0, 1600, 900)], park_point=(1480, 800), roi=(350, 130, 1250, 670))
-    r = pf(s)
-    assert not r.ok and status(r, "candidates") == [FAIL]
-
-
-def test_manual_points_are_reported():
-    r = pf(Settings(manual_points=[(600, 300), (1000, 250)]))
-    assert r.ok and "2 manual points" in [i for i in r.items if i.name == "candidates"][0].message
+def test_click_points_are_reported():
+    r = pf()
+    assert r.ok and "2 points" in [i for i in r.items if i.name == "click points"][0].message
 
 
 @pytest.mark.parametrize("me, game, live, expect", [
@@ -133,7 +106,7 @@ def test_admin_rights(me, game, live, expect):
 
 
 def test_whole_screen_target_warns_and_skips_admin_check():
-    r = pf(Settings(window_title=""), mapping=Mapping(0, 0, 1600, 900))
+    r = pf(Settings(window_title="", manual_points=PTS), mapping=Mapping(0, 0, 1600, 900))
     assert r.ok and status(r, "game window") == [WARN] and status(r, "admin rights") == ["info"]
 
 
@@ -145,23 +118,12 @@ def test_real_probes_do_not_crash():
     assert window_dpi(0) is None and window_elevated(0) is None
 
 
-# --- engine never clicks on a blank frame -----------------------------------------------------
-
-
-def test_engine_stops_without_clicking_on_blank_frame(base_img):
-    game = FakeGame(base_img)
-    bot = make_bot(game, fast_settings())
-    bot.grab = lambda m: np.zeros((900, 1600, 3), np.uint8)
-    bot.run()
-    assert "blank" in bot.stop_reason and not game.left_clicks and not game.right_clicks
-
-
 # --- command line: --preflight writes a report, never clicks, opens no window -----------------
 
 
 def test_preflight_command_reports_missing_window(tmp_path):
     home = tmp_path / "home"
-    Settings(window_title="NoSuchWindow-r2-preflight-test").save(home / "settings.json")
+    Settings(window_title="NoSuchWindow-r2-preflight-test", manual_points=PTS).save(home / "settings.json")
     before = (home / "settings.json").read_bytes()
     out = tmp_path / "pf.json"
     env = dict(os.environ, R2_HELPER_HOME=str(home))

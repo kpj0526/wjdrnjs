@@ -87,8 +87,8 @@ def test_blocked_glide_raises_input_blocked_and_never_presses(monkeypatch):
 
 
 def test_right_click_timing_settings_validate():
-    assert Settings().validate() == []
-    errs = Settings(right_click_hold=0, right_click_hover=5).validate()
+    assert Settings(manual_points=[(1, 1)]).validate() == []
+    errs = Settings(right_click_hold=0, right_click_hover=5, manual_points=[(1, 1)]).validate()
     assert any("right_click_hold" in e for e in errs) and any("right_click_hover" in e for e in errs)
 
 

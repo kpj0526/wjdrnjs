@@ -180,6 +180,15 @@ def is_foreground(hwnd: int) -> bool:
     return fg == hwnd or u.GetAncestor(fg, 2) == hwnd  # GA_ROOT
 
 
+def activate(hwnd: int) -> bool:
+    """Bring hwnd to the front (right after the user pressed Start, so Windows allows it)."""
+    if not hwnd or sys.platform != "win32":
+        return False
+    u = ctypes.windll.user32
+    u.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+    return bool(u.SetForegroundWindow(hwnd))
+
+
 def monitor_top_left(x: int, y: int) -> tuple[int, int]:
     """Top-left corner of the monitor containing (x, y). Works with negative coordinates."""
     if sys.platform != "win32":

@@ -1,4 +1,4 @@
-"""Tkinter front end: settings, ROI calibration preview, start/stop, log."""
+"""Tkinter front end: settings, click-point picking on a preview, start/stop, log."""
 from __future__ import annotations
 
 import logging
@@ -16,15 +16,13 @@ from tkinter import filedialog, messagebox, ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from .candidates import ORDERS, build_candidates, manual_point_reason
 from . import __version__
 from .capture import BACKENDS, CaptureError, Grabber
-from .config import MAX_MANUAL_POINTS, Settings
+from .config import MAX_MANUAL_POINTS, Settings, point_reason
 from .engine import Bot
-from .geometry import Mapping, WindowNotFound, enable_dpi_awareness, resolve_mapping
+from .geometry import Mapping, WindowNotFound, activate, enable_dpi_awareness, resolve_mapping
 from .paths import data_dir, resolve_in_data_dir, sample_image, settings_path
 from .preflight import run_preflight
-from .vision import load_template, verify
 from .winplace import fit_geometry, is_remote_session, monitor_work_areas
 from .winput import DryRunMouse, Win32Mouse
 
@@ -34,42 +32,19 @@ PICK_RADIUS = 7  # canvas px: clicking this close to a manual point selects it i
 
 # (field, label, kind) - kind: str|int|float|bool|tuple|rects|choice:<a>|<b>
 FORM = [
-    ("Window / coordinates", None, None),
+    ("Window", None, None),
     ("window_title", "Game window title contains", "str"),
-    ("capture_backend", "Capture backend", "choice:" + "|".join(BACKENDS)),
+    ("capture_backend", "Capture backend (preview)", "choice:" + "|".join(BACKENDS)),
     ("hide_helper_from_capture", "Hide this window from screenshots", "bool"),
-    ("roi", "Search ROI x1,y1,x2,y2", "tuple"),
-    ("Candidates", None, None),
-    ("grid_step", "Grid step (px)", "int"),
-    ("order", "Order", "choice:" + "|".join(ORDERS)),
-    ("stagger", "Stagger rows", "bool"),
-    ("prefer_mob_pixels", "Try busy/bright spots first", "bool"),
-    ("sticky_radius", "Try near last hit first (radius, 0=off)", "int"),
-    ("player_center", "Player center x,y (avoid)", "tuple"),
-    ("player_radius", "Player avoid radius", "int"),
-    ("ui_rects", "UI rects to avoid (x1,y1,x2,y2; ...)", "rects"),
-    ("park_point", "Cursor park point x,y", "tuple"),
     ("Timing (seconds) / limits", None, None),
-    ("wait_interval", "Wait after right click -> next cycle (s)", "float"),
-    ("verify_delay", "Check nameplate after left click (s)", "float"),
-    ("verify_timeout", "Give up nameplate check after (s)", "float"),
-    ("right_click_delay", "Delay before right click (s)", "float"),
-    ("right_click_hover", "Rest on target before right press (s)", "float"),
+    ("wait_interval", "Wait after the last point -> next cycle (s)", "float"),
+    ("right_click_delay", "Left click -> right click (s)", "float"),
+    ("point_delay", "Pause between points (s)", "float"),
+    ("right_click_hover", "Rest on point before right press (s)", "float"),
     ("right_click_hold", "Hold right button (s)", "float"),
-    ("max_attempts", "Max left clicks per cycle", "int"),
     ("max_cycles", "Max cycles (0=unlimited)", "int"),
-    ("max_consecutive_failed_cycles", "Stop after N empty cycles", "int"),
-    ("right_click_target", "Right click at", "choice:same|park"),
-    ("Verification", None, None),
-    ("verify_mode", "Mode", "choice:diff|absolute"),
-    ("plate_min_white", "Min white text px", "int"),
-    ("marker_min_green", "Min green marker px", "int"),
-    ("require_outline", "Text must have dark outline", "bool"),
-    ("verify_ignore_rects", "Ignore in check (x1,y1,x2,y2; ...)", "rects"),
-    ("template_path", "Nameplate template PNG (optional)", "str"),
     ("Safety", None, None),
     ("emergency_hotkey", "Emergency stop key", "choice:F12|F11|F10|F9|PAUSE|END"),
-    ("save_failure_shots", "Save screenshots of failed checks", "bool"),
 ]
 
 
@@ -126,8 +101,6 @@ class App:
         self.bot: Bot | None = None
         self.thread: threading.Thread | None = None
         self.log_q: queue.Queue = queue.Queue()
-        self.drag_start = None
-        self.verify_box = None
         self._build()
         self._setup_logging()
         for w in self.settings.load_warnings:
@@ -156,22 +129,16 @@ class App:
         bar.pack(fill="x")
         ttk.Button(bar, text="Capture game screen", command=self.capture_preview).pack(side="left")
         ttk.Button(bar, text="Load screenshot...", command=self.load_image).pack(side="left", padx=4)
-        ttk.Button(bar, text="Test check on image", command=self.test_verify).pack(side="left")
         ttk.Button(bar, text="Preflight check", command=self.preflight_check).pack(side="left", padx=4)
-        ttk.Label(bar, text="  Drag sets:").pack(side="left")
-        self.drag_mode = tk.StringVar(value="roi")
-        for v, t in (("roi", "ROI"), ("player", "player"), ("park", "park point"), ("manual", "mob points")):
-            ttk.Radiobutton(bar, text=t, value=v, variable=self.drag_mode).pack(side="left")
+        ttk.Label(bar, text="  Click the preview to add click points (click a point to select it)").pack(side="left")
 
         self.canvas = tk.Canvas(left, width=PREVIEW_W, height=PREVIEW_W * 9 // 16, bg="#222", highlightthickness=0)
         self.canvas.pack(pady=4)
-        self.canvas.bind("<ButtonPress-1>", self._on_press)
-        self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.status = ttk.Label(left, text="", foreground="#555")
         self.status.pack(fill="x")
 
-        # manual candidates: picked on the preview in "mob points" mode, tried in list order
+        # click points: picked on the preview, clicked in list order every cycle
         mf = ttk.Frame(left)
         mf.pack(fill="x", pady=(4, 0))
         self.manual_list = tk.Listbox(mf, height=4, width=40, exportselection=False, activestyle="none",
@@ -413,7 +380,7 @@ class App:
         if s:
             try:
                 s.save(self.settings_file)
-                log.info("settings saved to %s (%d manual points)", self.settings_file, len(s.manual_points))
+                log.info("settings saved to %s (%d click points)", self.settings_file, len(s.manual_points))
                 for p in s.manual_point_problems():
                     log.warning("saved, but a run is refused until fixed: %s", p)
             except OSError as e:
@@ -436,7 +403,6 @@ class App:
         h, w = arr.shape[:2]
         s = self.settings
         self.frame_mapping = mapping or Mapping(0, 0, w, h, s.ref_w, s.ref_h)
-        self.verify_box = None
         self.status.config(text=f"{desc} ({w}x{h}); coordinates are reference {s.ref_w}x{s.ref_h}")
         self.redraw()
 
@@ -466,18 +432,6 @@ class App:
                 return
             self._set_frame(arr, Path(p).name)
 
-    def test_verify(self):
-        s = self._commit_form()
-        if not s or self.frame is None:
-            return
-        s = replace(s, verify_mode="absolute")  # a single image has no baseline
-        m = self.frame_mapping
-        tmpl = load_template(s.template_path, s, (m.sx + m.sy) / 2) if s.template_path else None
-        res = verify(self.frame, s, m, template=tmpl)
-        self.verify_box = res.box
-        log.info("check on preview image: %s", res.summary())
-        self.redraw()
-
     def _k(self):
         """Reference -> canvas scale."""
         return PREVIEW_W / self.settings.ref_w
@@ -491,62 +445,34 @@ class App:
             img = Image.fromarray(self.frame).resize((PREVIEW_W, round(s.ref_h * k)), Image.BILINEAR)
             self._tk_img = ImageTk.PhotoImage(img)
             c.create_image(0, 0, image=self._tk_img, anchor="nw")
-        for (x1, y1, x2, y2) in s.ui_rects:
-            c.create_rectangle(x1 * k, y1 * k, x2 * k, y2 * k, outline="#ff4040", stipple="gray25", fill="#ff4040")
-        for (x1, y1, x2, y2) in s.verify_ignore_rects:
-            c.create_rectangle(x1 * k, y1 * k, x2 * k, y2 * k, outline="#ffa500", dash=(3, 3))
-        px, py = s.player_center
-        rr = s.player_radius
-        c.create_oval((px - rr) * k, (py - rr) * k, (px + rr) * k, (py + rr) * k, outline="#ff4040", width=2)
-        x1, y1, x2, y2 = s.roi
-        c.create_rectangle(x1 * k, y1 * k, x2 * k, y2 * k, outline="#40ff40", width=2)
-        n = s.max_attempts
-        if s.manual_points:
-            footer = self._draw_manual_points()
-        else:
-            cands = build_candidates(s, self.frame, self.frame_mapping) if self.frame is not None else build_candidates(s)
-            for i, cd in enumerate(cands):
-                col = "#ffff00" if i < n else "#808080"
-                cx, cy = cd.x * k, cd.y * k
-                c.create_oval(cx - 2, cy - 2, cx + 2, cy + 2, fill=col, outline="")
-                if i < min(n, 40):
-                    c.create_text(cx + 3, cy - 6, text=str(i + 1), fill=col, font=("Segoe UI", 7), anchor="w")
-            footer = f"{len(cands)} candidates, first {min(n, len(cands))} used per cycle (yellow). "
-        qx, qy = s.park_point
-        c.create_line(qx * k - 6, qy * k - 6, qx * k + 6, qy * k + 6, fill="#40a0ff", width=2)
-        c.create_line(qx * k - 6, qy * k + 6, qx * k + 6, qy * k - 6, fill="#40a0ff", width=2)
-        if self.verify_box:
-            bx1, by1, bx2, by2 = self.verify_box
-            c.create_rectangle(bx1 * k, by1 * k, bx2 * k, by2 * k, outline="#00ffff", width=2)
-        c.create_text(6, c.winfo_reqheight() - 8, anchor="sw", fill="#fff", font=("Segoe UI", 8),
-                      text=footer + "Green=ROI, red=avoid, blue X=park, orange=ignored by check")
+        footer = self._draw_manual_points()
+        c.create_text(6, c.winfo_reqheight() - 8, anchor="sw", fill="#fff", font=("Segoe UI", 8), text=footer)
         self._refresh_manual_list()
 
     def _draw_manual_points(self) -> str:
-        """Numbered manual points: cyan = used, grey = beyond max_attempts, red X = refused."""
+        """Numbered click points: cyan = clicked, red X = refused (outside the game client)."""
         c, s, k = self.canvas, self.settings, self._k()
         sel = self._manual_selected()
-        used = bad = 0
+        bad = 0
         for i, p in enumerate(s.manual_points):
             cx, cy = p[0] * k, p[1] * k
-            if manual_point_reason(p, s):
+            if point_reason(p, s):
                 bad += 1
                 col = "#ff3030"
                 c.create_line(cx - 5, cy - 5, cx + 5, cy + 5, fill=col, width=2, tags="manual")
                 c.create_line(cx - 5, cy + 5, cx + 5, cy - 5, fill=col, width=2, tags="manual")
             else:
-                col = "#00e5ff" if used < s.max_attempts else "#808080"
-                used += 1
+                col = "#00e5ff"
                 c.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, outline=col, width=2, tags="manual")
             if i == sel:
                 c.create_oval(cx - 8, cy - 8, cx + 8, cy + 8, outline="#ffffff", tags="manual")
             c.create_text(cx + 7, cy - 8, text=str(i + 1), fill=col, font=("Segoe UI", 8, "bold"),
                           anchor="w", tags=("manual", "manual_label"))
-        refused = f", {bad} REFUSED (red X: outside ROI or in an avoid area)" if bad else ""
-        return (f"{len(s.manual_points)} manual points{refused}; first {min(s.max_attempts, used)} valid used "
-                "per cycle in list order, auto grid off. ")
+        refused = f", {bad} REFUSED (red X)" if bad else ""
+        return (f"{len(s.manual_points)} click points{refused}; each cycle: left + right click on every point "
+                "in list order")
 
-    # ---------- manual candidates ----------
+    # ---------- click points ----------
     def _manual_selected(self) -> int | None:
         sel = self.manual_list.curselection()
         return sel[0] if sel else None
@@ -556,7 +482,7 @@ class App:
         keep = self._manual_selected()
         lb.delete(0, "end")
         for i, p in enumerate(s.manual_points):
-            why = manual_point_reason(p, s)
+            why = point_reason(p, s)
             lb.insert("end", f"{i + 1:>3}. ({p[0]}, {p[1]})" + (f"  REFUSED: {why}" if why else ""))
             if why:
                 lb.itemconfig("end", foreground="#c00000")
@@ -564,8 +490,8 @@ class App:
             lb.selection_set(keep)
             lb.see(keep)
         if not s.manual_points and not self.manual_info.cget("text"):
-            self.manual_info.config(text="No manual points: the automatic grid is used. Choose 'mob points' "
-                                         "above and click the preview to add points in click order.")
+            self.manual_info.config(text="No click points yet: click the preview (Capture game screen first) "
+                                         "to add them in click order.")
 
     def _set_manual_points(self, pts, select: int | None = None):
         # a new Settings object: a running Bot keeps the settings it was started with
@@ -579,17 +505,17 @@ class App:
 
     def _manual_message(self, text: str, warn: bool = False):
         self.manual_info.config(text=text, foreground="#c00000" if warn else "#555")
-        (log.warning if warn else log.info)("manual points: %s", text)
+        (log.warning if warn else log.info)("click points: %s", text)
 
     def add_manual_point(self, x: int, y: int) -> bool:
-        """Append a reference point. Refused (nothing added) wherever a run would refuse it."""
+        """Append a reference point. Refused (nothing added) outside the game client."""
         s = self.settings
-        why = manual_point_reason((x, y), s)
+        why = point_reason((x, y), s)
         if why:
             self._manual_message(f"point ({x}, {y}) not added: {why}", warn=True)
             return False
         if len(s.manual_points) >= MAX_MANUAL_POINTS:
-            self._manual_message(f"point not added: at most {MAX_MANUAL_POINTS} manual points", warn=True)
+            self._manual_message(f"point not added: at most {MAX_MANUAL_POINTS} click points", warn=True)
             return False
         self._set_manual_points(list(s.manual_points) + [(x, y)], select=len(s.manual_points))
         self._manual_message(f"point {len(self.settings.manual_points)} added at ({x}, {y}); "
@@ -609,11 +535,11 @@ class App:
     def clear_manual_points(self):
         n = len(self.settings.manual_points)
         if not n or not messagebox.askyesno(
-                "Clear manual points",
-                f"Delete all {n} manual points?\n\nThe automatic grid is used again when the list is empty."):
+                "Clear click points",
+                f"Delete all {n} click points?"):
             return
         self._set_manual_points([])
-        self._manual_message(f"all {n} manual points deleted; the automatic grid is used")
+        self._manual_message(f"all {n} click points deleted")
 
     def move_manual_point(self, delta: int):
         i = self._manual_selected()
@@ -632,47 +558,20 @@ class App:
         near = [d for d in near if d[0] <= PICK_RADIUS]
         return min(near)[1] if near else None
 
-    def _on_press(self, e):
-        self.drag_start = (e.x, e.y)
-
-    def _on_drag(self, e):
-        if self.drag_mode.get() != "roi" or not self.drag_start:
-            return
-        self.canvas.delete("drag")
-        self.canvas.create_rectangle(*self.drag_start, e.x, e.y, outline="#80ff80", dash=(4, 2), tags="drag")
-
     def _on_release(self, e):
         k = self._k()
-        ref = lambda x, y: (round(x / k), round(y / k))
-        mode = self.drag_mode.get()
-        if mode == "manual":
-            self.drag_start = None
-            if not self._commit_form():  # check the point against the ROI/avoid areas as typed
-                return
-            hit = self._manual_point_near(e.x, e.y)
-            if hit is not None:  # clicking an existing point selects it (for Delete/Up/Down)
-                self.manual_list.selection_clear(0, "end")
-                self.manual_list.selection_set(hit)
-                self.redraw()
-            else:
-                self.add_manual_point(*ref(e.x, e.y))
-            return
-        if mode == "roi" and self.drag_start:
-            (ax, ay), (bx, by) = ref(*self.drag_start), ref(e.x, e.y)
-            if abs(bx - ax) > 20 and abs(by - ay) > 20:
-                self._set_field("roi", (min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)))
-        elif mode == "player":
-            self._set_field("player_center", ref(e.x, e.y))
-        elif mode == "park":
-            self._set_field("park_point", ref(e.x, e.y))
-        self.drag_start = None
-        self.apply()
+        hit = self._manual_point_near(e.x, e.y)
+        if hit is not None:  # clicking an existing point selects it (for Delete/Up/Down)
+            self.manual_list.selection_clear(0, "end")
+            self.manual_list.selection_set(hit)
+            self.redraw()
+        else:
+            self.add_manual_point(round(e.x / k), round(e.y / k))
 
     # ---------- run ----------
     def _preflight(self, s: Settings):
         """Run the preflight checks for s and write every item to the log. Never clicks."""
-        self.grabber.backend = s.capture_backend
-        report = run_preflight(s, self.grabber.grab, live=not s.dry_run, resolve=resolve_mapping)
+        report = run_preflight(s, live=not s.dry_run, resolve=resolve_mapping)
         for item in report.items:
             (log.error if item.status == "FAIL" else log.warning if item.status == "warn" else log.info)(
                 "preflight %s", item.line())
@@ -683,7 +582,7 @@ class App:
         s = self._commit_form()
         if not s:
             return
-        report = self._preflight(s)  # its settings check includes the manual points
+        report = self._preflight(s)  # its settings check includes the click points
         lines = [i.line() for i in report.items]
         if report.ok:
             messagebox.showinfo("Preflight passed", "\n\n".join(lines))
@@ -698,8 +597,8 @@ class App:
             return
         problems = s.manual_point_problems()
         if problems:
-            messagebox.showerror("Manual points refused", "Delete or move these manual points (red X on the "
-                                 "preview) before starting:\n\n" + "\n".join(problems))
+            messagebox.showerror("Click points", "Fix the click points before starting:\n\n"
+                                 + "\n".join(problems))
             return
         report = self._preflight(s)
         if not report.ok:
@@ -730,13 +629,13 @@ class App:
                 return
         else:
             mouse = DryRunMouse()
-        self.grabber.backend = s.capture_backend
-        log.info("wait after right click -> next cycle: %.3f s", s.wait_interval)
-        if s.manual_points:
-            log.info("using %d manual points in list order (automatic grid off)", len(s.manual_points))
-        self.bot = Bot(s, self.grabber.grab, mouse)
+        log.info("%d click points; left -> right click %.3f s; wait after the last point %.3f s",
+                 len(s.manual_points), s.right_click_delay, s.wait_interval)
+        self.bot = Bot(s, mouse)
         self.thread = threading.Thread(target=self.bot.run, daemon=True)
         self.thread.start()
+        if not s.dry_run and report.mapping and report.mapping.hwnd:
+            activate(report.mapping.hwnd)  # the game must be the active window for live clicks
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.hotkey_lbl.config(text=f"RUNNING ({'dry run' if s.dry_run else 'LIVE'}) - {s.emergency_hotkey} stops",

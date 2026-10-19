@@ -1,3 +1,3 @@
-"""R2 target-selection helper: grid-click a mob cluster until the nameplate appears."""
+"""R2 auto clicker: left click then right click each picked point in order, then wait."""
 
-__version__ = "0.1.5"
+__version__ = "0.2.0"

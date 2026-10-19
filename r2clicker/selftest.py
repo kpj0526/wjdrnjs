@@ -1,11 +1,9 @@
 """Offline self-test, also run against the packaged exe: `R2TargetHelper.exe --selftest out.json`.
 
 It never touches the game or the real mouse. It checks:
-- bundled sample image and Tk are present; PrintWindow capture and capture exclusion work
-- candidates are generated
-- the nameplate check finds a synthetic nameplate and nothing in the real screenshot
-- a dry-run cycle against a simulated screen, also with manual points
-- the preflight refuses a blank frame and an unsafe manual point (simulated game window)
+- bundled sample image and Tk are present; PrintWindow capture (preview) and capture exclusion work
+- a dry-run cycle: every click point gets a left and then a right click, in list order
+- the preflight passes with click points and refuses an empty point list (simulated game window)
 - settings can be saved and loaded in the data folder, and the self-test never creates or
   changes the user's settings.json
 
@@ -24,17 +22,13 @@ from pathlib import Path
 
 
 def run_checks() -> dict:
-    import numpy as np
     from PIL import Image
 
     from . import __version__
-    from .candidates import build_candidates
     from .config import Settings
     from .engine import Bot
-    from .fixtures import frame_with_nameplate
     from .geometry import Mapping
     from .paths import data_dir, is_frozen, sample_image, settings_path
-    from .vision import verify
     from .winput import DryRunMouse
 
     checks: dict[str, str] = {}
@@ -92,54 +86,27 @@ def run_checks() -> dict:
 
     m = Mapping(0, 0, 1600, 900)
 
-    def cands():
-        c = build_candidates(Settings(), np.asarray(state["img"]), m)
-        assert len(c) > 50
-        return f"{len(c)} candidates"
-
-    def detect():
-        s = Settings()
-        base = np.asarray(state["img"])
-        hit = verify(frame_with_nameplate(state["img"], (700, 250)), s, m, before=base)
-        miss = verify(base, Settings(verify_mode="absolute"), m)
-        assert hit.ok, hit.summary()
-        assert not miss.ok, miss.summary()
-        return f"hit {hit.ms:.0f} ms"
-
     def dry_cycle():
         mouse = DryRunMouse()
-        s = Settings(settle_delay=0, verify_delay=0, verify_timeout=0, max_attempts=3, max_cycles=1,
-                     emergency_hotkey="", corner_failsafe=False)
-        frame = np.asarray(state["img"])
-        bot = Bot(s, lambda _m: frame, mouse, mapping_fn=lambda: (m, "selftest"))
-        bot.run()
-        lefts = [a for a in mouse.actions if a[0] == "left"]
-        assert len(lefts) == 3, mouse.actions
-        return bot.stop_reason
-
-    def manual_cycle():
-        mouse = DryRunMouse()
         pts = [(600, 300), (1000, 250)]
-        s = Settings(settle_delay=0, verify_delay=0, verify_timeout=0, max_cycles=1, emergency_hotkey="",
+        s = Settings(right_click_delay=0, point_delay=0, max_cycles=2, emergency_hotkey="",
                      corner_failsafe=False, manual_points=pts)
-        frame = np.asarray(state["img"])
-        Bot(s, lambda _m: frame, mouse, mapping_fn=lambda: (m, "selftest")).run()
-        lefts = [a[1:] for a in mouse.actions if a[0] == "left"]
-        assert lefts == pts, lefts
-        return f"{len(lefts)} manual points recorded in order (dry run, no clicks)"
+        bot = Bot(s, mouse, mapping_fn=lambda: (m, "selftest"))
+        bot.run()
+        clicks = [a for a in mouse.actions if a[0] in ("left", "right")]
+        expect = [(b, x, y) for x, y in pts for b in ("left", "right")] * 2
+        assert clicks == expect, clicks
+        return f"{len(clicks)} clicks recorded in order (dry run, no clicks sent); {bot.stop_reason}"
 
     def preflight():
         from .preflight import run_preflight
 
-        frame = np.asarray(state["img"])
         fake = dict(resolve=lambda t, w, h: (m, "selftest window"), dpi_awareness=lambda: 2,
                     me_elevated=lambda: False, game_elevated=lambda h: False)
-        good = run_preflight(Settings(), lambda _m: frame, live=False, **fake)
+        good = run_preflight(Settings(manual_points=[(800, 440)]), live=False, **fake)
         assert good.ok, good.text()
-        blank = run_preflight(Settings(), lambda _m: np.zeros_like(frame), live=True, **fake)
-        assert not blank.ok and blank.failures[0].name == "capture", blank.text()
-        unsafe = run_preflight(Settings(manual_points=[(800, 440)]), lambda _m: frame, live=False, **fake)
-        assert not unsafe.ok and unsafe.failures[0].name == "settings", unsafe.text()
+        empty = run_preflight(Settings(), live=True, **fake)
+        assert not empty.ok and empty.failures[0].name == "settings", empty.text()
         return f"{len(good.items)} checks"
 
     def dpi_awareness():
@@ -163,8 +130,7 @@ def run_checks() -> dict:
 
     user_settings = settings_path()
     before = user_settings.read_bytes() if user_settings.exists() else None
-    for name, fn in [("sample", sample), ("tk_and_window_capture", tk_and_window_capture), ("candidates", cands),
-                     ("detect", detect), ("dry_cycle", dry_cycle), ("manual_cycle", manual_cycle),
+    for name, fn in [("sample", sample), ("tk_and_window_capture", tk_and_window_capture), ("dry_cycle", dry_cycle),
                      ("preflight", preflight), ("dpi_awareness", dpi_awareness), ("settings_io", settings_io)]:
         check(name, fn)
     after = user_settings.read_bytes() if user_settings.exists() else None

@@ -60,6 +60,7 @@ FORM = [
     ("max_cycles", "Max cycles (0=unlimited)", "int"),
     ("max_consecutive_failed_cycles", "Stop after N empty cycles", "int"),
     ("right_click_target", "Right click at", "choice:same|park"),
+    ("park_during_check", "Move cursor away while checking", "bool"),
     ("Verification", None, None),
     ("verify_mode", "Mode", "choice:diff|absolute"),
     ("plate_min_white", "Min white text px", "int"),

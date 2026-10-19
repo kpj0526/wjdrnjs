@@ -37,6 +37,8 @@ After a left click the tool checks that the mob is selected (white nameplate wit
 bar, near the clicked point), then right clicks it at once, and checks that the target
 panel (mob name at the bottom centre) appeared; if not, it right clicks once more.
 The log says "right click confirmed" or "right click NOT confirmed".
+The mouse stays on the mob from the left click to the right click (the game only takes the
+right click on the mob under the cursor).
 If the game ignores the right click, raise "Right button press time" (default 0.15, e.g. 0.3).
 
 If the game runs as administrator, run this tool as administrator too, or Windows

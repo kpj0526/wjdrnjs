@@ -349,6 +349,12 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
   text box, a screen without one up to ~60, so *Min white text px* is 150 and the mode is
   `absolute` (a nameplate that stays visible still counts). A corpse nameplate without the
   green bar does not count; this has not been checked against a real corpse screenshot.
+- **The cursor stays on the mob** from the left click to the right click (customer log: with the
+  cursor moved away while checking and brought back for the right click, R2 ignored two right
+  clicks in a row, while a right click with the cursor resting on the mob worked). Before the
+  right press the cursor is nudged 1 px and back with real mouse input and rests
+  *Rest on target before right click* (0.1 s). *Move cursor away while checking* restores the
+  old behaviour.
 - **Right click confirmation:** a right click that registers shows the target panel at the
   bottom centre (dark box, mob name, green HP dots). After the right click the tool looks for
   it for *Wait for target panel* seconds and right clicks again (*Right click again if no

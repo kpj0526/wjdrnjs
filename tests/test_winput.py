@@ -83,7 +83,8 @@ def test_right_click_on_the_cursor_position_goes_out_at_once(monkeypatch):
     monkeypatch.setattr(winput, "cursor_pos", lambda: (900, 500))
     t0 = time.perf_counter()
     m.right_click(900, 500)
-    assert [e[2] for e in m._u.inputs()] == [RIGHT_DOWN, RIGHT_UP]  # no glide moves
+    flags = [e[2] for e in m._u.inputs()]
+    assert flags == [ABS_MOVE, ABS_MOVE, RIGHT_DOWN, RIGHT_UP]  # a 1 px nudge on the spot, no glide
     assert m._u.time_of(RIGHT_DOWN) - t0 < 0.01
 
 
@@ -117,3 +118,15 @@ def test_default_right_press_is_longer_than_the_left_click(monkeypatch):
     left = m._u.time_of(LEFT_UP) - m._u.time_of(LEFT_DOWN)
     right = m._u.time_of(RIGHT_UP) - m._u.time_of(RIGHT_DOWN)
     assert left < 0.1 and 0.15 - 0.005 <= right < 0.15 + 0.08, (left, right)
+
+
+def test_right_click_on_the_spot_nudges_with_real_mouse_input_and_ends_on_the_pixel(monkeypatch):
+    m = winput.Win32Mouse(right_hover_s=0)
+    m._u = FakeUser32()
+    monkeypatch.setattr(winput, "cursor_pos", lambda: (1012, 633))
+    m.right_click(1012, 633)
+    moves = [e for e in m._u.inputs() if e[2] == ABS_MOVE]
+    xs = [round(-1600 + e[3] * (3200 - 1) / 65535) for e in moves]
+    assert xs == [1013, 1012]
+    pos = [e for e in m._u.events if e[1] == "pos"]
+    assert pos[-1][2:] == (1012, 633)  # pinned on the exact pixel before pressing

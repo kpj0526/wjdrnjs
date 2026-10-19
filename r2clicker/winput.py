@@ -133,6 +133,11 @@ class Win32Mouse:
     def right_click(self, x: int, y: int) -> None:
         if cursor_pos() != (x, y):
             self.glide(x, y)
+        else:  # already there: a 1 px move and back, so the game sees real mouse input on the mob
+            self._input_move(x + 1, y)
+            time.sleep(0.005)
+            self._input_move(x, y)
+            self.move(x, y)
         if self.right_hover_s > 0:
             time.sleep(self.right_hover_s)  # let the game see the cursor on the mob before clicking
         self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, self.right_press_s)

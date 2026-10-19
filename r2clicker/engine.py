@@ -179,7 +179,8 @@ class Bot:
             tried.append((c.x, c.y))
             t_click = time.perf_counter()
             self.mouse.left_click(sx, sy)
-            self.mouse.move(*park)  # hover highlights must not look like a selection
+            if s.park_during_check:
+                self.mouse.move(*park)  # optional: a hover label must not look like a selection
             if not self._wait_until(t_click + s.verify_delay):
                 break
             while True:
@@ -200,18 +201,19 @@ class Bot:
                 if not self._clickable(m, *target):
                     log.warning("right-click point screen%s is covered by another window; not clicked", target)
                     return CycleResult(False, i, c, res, tried, skipped="right-click point covered")
+                # the cursor is still on the mob (unless parked): the game right clicks what is under it
                 self.mouse.right_click(*target)
-                self.mouse.move(*park)
                 log.info("selected at ref(%d,%d); right click at screen%s", c.x, c.y, target)
                 self.last_success = (c.x, c.y)
                 if s.confirm_right_click:
-                    self._confirm_right_click(m, target, park)
+                    self._confirm_right_click(m, target)
+                self.mouse.move(*park)
                 return CycleResult(True, i, c, res, tried)
             self._save_shot(after, f"fail{i}")
-            baseline = after  # cursor is parked, so the latest frame is the best baseline
+            baseline = after  # the latest frame is the best baseline for the next attempt
         return CycleResult(False, len(tried), None, res, tried)
 
-    def _confirm_right_click(self, m: Mapping, target: tuple[int, int], park: tuple[int, int]) -> bool:
+    def _confirm_right_click(self, m: Mapping, target: tuple[int, int]) -> bool:
         """Wait for the target panel the game shows when a right click registers; right click again
         (right_click_retries times) when it does not appear. Only logs: the cycle still counts."""
         s = self.s
@@ -231,7 +233,6 @@ class Bot:
                 break
             log.warning("no target panel after the right click (%s); right clicking again", detail)
             self.mouse.right_click(*target)
-            self.mouse.move(*park)
         log.warning("right click NOT confirmed: no target panel at the bottom (%s). If the game shows it, "
                     "raise 'Right button press time' or check 'Target panel rect'", detail)
         return False

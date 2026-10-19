@@ -81,7 +81,7 @@ def fast_settings(**kw):
     # the synthetic game has no target panel and was built for the frame-difference check
     base = dict(settle_delay=0, verify_delay=0.0, verify_timeout=0.0, right_click_delay=0, wait_interval=0,
                 corner_failsafe=False, emergency_hotkey="", sticky_radius=0, confirm_right_click=False,
-                verify_mode="diff")
+                verify_mode="diff", park_during_check=True)
     base.update(kw)
     return Settings(**base)
 
@@ -212,3 +212,42 @@ def test_right_click_goes_out_right_after_a_successful_check(base_img, monkeypat
     game.right_click = lambda x, y: t.append(time.perf_counter()) or orig(x, y)
     assert make_bot(game, fast_settings()).run_cycle().success
     assert t[0] - checked[-1] < 0.02  # the check passes, then the right click without a wait
+
+
+class CursorLog(FakeGame):
+    """Records every cursor position change, to see where the cursor is when the right click comes."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.trail = []
+
+    def move(self, x, y):
+        super().move(x, y)
+        self.trail.append(("move", x, y))
+
+    def left_click(self, x, y):
+        super().left_click(x, y)
+        self.trail.append(("left", x, y))
+
+    def right_click(self, x, y):
+        super().right_click(x, y)
+        self.trail.append(("right", x, y))
+
+
+def test_by_default_the_cursor_stays_on_the_mob_from_left_click_to_right_click(base_img):
+    game = CursorLog(base_img)
+    s = fast_settings(park_during_check=False, verify_mode="absolute")
+    assert not Settings().park_during_check
+    r = make_bot(game, s).run_cycle()
+    assert r.success
+    i = next(k for k, e in enumerate(game.trail) if e[0] == "right")
+    left = game.trail[i - 1]
+    assert left[0] == "left" and left[1:] == game.trail[i][1:]  # nothing moved the cursor in between
+    assert game.trail[-1] == ("move", *game.m.to_screen(*s.park_point))  # parked only afterwards
+
+
+def test_park_during_check_moves_the_cursor_away_after_the_left_click(base_img):
+    game = CursorLog(base_img)
+    make_bot(game, fast_settings(park_during_check=True)).run_cycle()
+    lefts = [k for k, e in enumerate(game.trail) if e[0] == "left"]
+    assert all(game.trail[k + 1][0] == "move" for k in lefts)

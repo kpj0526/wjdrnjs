@@ -63,7 +63,7 @@ class Settings:
     verify_timeout: float = 0.6       # keep re-checking until this long after the click
     settle_delay: float = 0.08        # after moving cursor off, before the baseline shot
     right_click_delay: float = 0.0    # between successful verification and right click (0 = at once)
-    right_click_hover: float = 0.03   # cursor rests on the target this long before the right click
+    right_click_hover: float = 0.1    # cursor rests on the target this long before the right click
     right_click_press: float = 0.15   # how long the right button is held down (left: 0.03)
 
     # --- limits ---
@@ -75,6 +75,8 @@ class Settings:
     dry_run: bool = True
     park_point: tuple[int, int] = (1480, 300)  # cursor rest point (empty floor, off ROI)
     right_click_target: str = "same"  # same | park  (where the right click lands)
+    park_during_check: bool = False   # move the cursor to the park point while checking the nameplate.
+                                      # Off: it stays on the mob, which R2 needs for the right click
 
     # --- verification (nameplate: white text + green markers) ---
     verify_mode: str = "absolute"     # absolute = as-is (a still visible nameplate counts);

@@ -12,6 +12,7 @@ MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
 MOUSEEVENTF_ABSOLUTE = 0x8000
 MOUSEEVENTF_VIRTUALDESK = 0x4000
+BUTTON_APIS = ("sendinput", "mouse_event")  # mouse_event: the older API (what a PowerShell test uses)
 
 
 class DryRunMouse:
@@ -76,9 +77,13 @@ class Win32Mouse:
 
     live = True
 
-    def __init__(self, press_s: float = 0.03, right_hover_s: float = 0.03, right_press_s: float = 0.15) -> None:
+    def __init__(self, press_s: float = 0.03, right_hover_s: float = 0.03, right_press_s: float = 0.15,
+                 right_api: str = "sendinput") -> None:
         if sys.platform != "win32":
             raise RuntimeError("live input is only supported on Windows")
+        if right_api not in BUTTON_APIS:
+            raise ValueError(f"right_api must be one of {BUTTON_APIS}")
+        self.right_api = right_api
         self.press_s = press_s
         self.right_hover_s = right_hover_s
         self.right_press_s = right_press_s
@@ -89,13 +94,19 @@ class Win32Mouse:
         inp.mi = _MOUSEINPUT(dx, dy, 0, flag, 0, 0)
         return self._u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT)) == 1
 
-    def _buttons(self, down: int, up: int, press_s: float | None = None) -> None:
-        if not self._send(down):
+    def _legacy(self, flag: int) -> bool:
+        """The same button event through the older mouse_event API (no return value to check)."""
+        self._u.mouse_event(flag, 0, 0, 0, 0)
+        return True
+
+    def _buttons(self, down: int, up: int, press_s: float | None = None, api: str = "sendinput") -> None:
+        send = self._legacy if api == "mouse_event" else self._send
+        if not send(down):
             raise InputBlocked("SendInput was blocked; if the game runs as administrator, run this tool as administrator too")
         try:
             time.sleep(self.press_s if press_s is None else press_s)
         finally:
-            self._send(up)  # never leave a button held down
+            send(up)  # never leave a button held down
 
     def _input_move(self, x: int, y: int) -> None:
         """One absolute SendInput mouse move to screen pixel (x, y) on the virtual desktop."""
@@ -140,7 +151,11 @@ class Win32Mouse:
             self.move(x, y)
         if self.right_hover_s > 0:
             time.sleep(self.right_hover_s)  # let the game see the cursor on the mob before clicking
-        self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, self.right_press_s)
+        self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, self.right_press_s, self.right_api)
+
+    def right_click_here(self) -> None:
+        """Right click where the cursor is now, without moving it (the 'Test right click' button)."""
+        self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, self.right_press_s, self.right_api)
 
 
 def cursor_pos() -> tuple[int, int] | None:

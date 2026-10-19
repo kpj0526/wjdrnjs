@@ -75,6 +75,7 @@ class Settings:
     dry_run: bool = True
     park_point: tuple[int, int] = (1480, 300)  # cursor rest point (empty floor, off ROI)
     right_click_target: str = "same"  # same | park  (where the right click lands)
+    right_click_api: str = "sendinput"  # sendinput | mouse_event (older API) for the right button
     park_during_check: bool = False   # move the cursor to the park point while checking the nameplate.
                                       # Off: it stays on the mob, which R2 needs for the right click
 
@@ -261,7 +262,7 @@ class Settings:
         from .capture import BACKENDS
 
         choices = {"capture_backend": BACKENDS, "order": ORDERS, "verify_mode": ("diff", "absolute"),
-                   "right_click_target": ("same", "park")}
+                   "right_click_target": ("same", "park"), "right_click_api": ("sendinput", "mouse_event")}
         for name, ok in choices.items():
             if getattr(self, name) not in ok:
                 e.append(f"{name} must be one of {', '.join(ok)}")

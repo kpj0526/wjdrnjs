@@ -355,6 +355,9 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
   right press the cursor is nudged 1 px and back with real mouse input and rests
   *Rest on target before right click* (0.1 s). *Move cursor away while checking* restores the
   old behaviour.
+- **Test right click (3 s)** sends one real right click where the mouse is 3 s later (no cursor
+  movement), with *Right click input API* (`sendinput` or the older `mouse_event`, which a
+  PowerShell test uses) and *Right button press time*, then logs whether the target panel appeared.
 - **Right click confirmation:** a right click that registers shows the target panel at the
   bottom centre (dark box, mob name, green HP dots). After the right click the tool looks for
   it for *Wait for target panel* seconds and right clicks again (*Right click again if no

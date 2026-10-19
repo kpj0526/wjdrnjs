@@ -594,7 +594,7 @@ def test_live_start_uses_the_typed_right_click_timing(app, monkeypatch):
     app.start()
     if app.thread:
         app.thread.join(2)
-    assert made == [{"right_hover_s": 0.2, "right_press_s": 0.4}]
+    assert made == [{"right_hover_s": 0.2, "right_press_s": 0.4, "right_api": "sendinput"}]
 
 
 @pytest.mark.parametrize("dry, activated", [(False, [4321]), (True, [])])
@@ -615,3 +615,44 @@ def test_live_start_brings_the_game_window_to_the_front(app, monkeypatch, dry, a
     app.start()
     app.thread.join(2)
     assert seen == activated and not app.errors
+
+
+@pytest.mark.parametrize("panel, level", [(True, "INFO"), (False, "WARNING")])
+def test_test_right_click_button(app, monkeypatch, caplog, panel, level):
+    import numpy as np
+
+    from r2clicker import gui
+
+    sent = []
+
+    class FakeMouse:
+        def __init__(self, **k):
+            sent.append(k)
+
+        def right_click_here(self):
+            sent.append("click")
+
+    monkeypatch.setattr(gui, "Win32Mouse", FakeMouse)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(gui, "cursor_pos", lambda: (900, 500))
+    monkeypatch.setattr(gui, "resolve_mapping", lambda t, w, h: (Mapping(0, 0, 1600, 900, w, h), "game"))
+    monkeypatch.setattr(app.grabber, "grab", lambda m: np.zeros((900, 1600, 3), np.uint8))
+    monkeypatch.setattr(gui, "target_panel_shown", lambda img, s, m: (panel, "detail"))
+    later = []
+    monkeypatch.setattr(app.root, "after", lambda ms, fn=None: later.append(fn))
+    app.vars["right_click_api"][0].set("mouse_event")
+    with caplog.at_level("INFO", logger="r2clicker"):
+        app.test_right_click()
+        later.pop(0)()   # 3 s later: the click
+        later.pop(0)()   # then the panel check
+    assert sent == [{"right_hover_s": 0, "right_press_s": 0.15, "right_api": "mouse_event"}, "click"]
+    rec = [r for r in caplog.records if "TEST: " in r.getMessage() and "panel" in r.getMessage()]
+    assert rec and rec[-1].levelname == level
+
+
+def test_test_right_click_cancelled_sends_nothing(app, monkeypatch):
+    from r2clicker import gui
+
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: False)
+    monkeypatch.setattr(gui, "Win32Mouse", lambda **k: pytest.fail("no input when cancelled"))
+    app.test_right_click()

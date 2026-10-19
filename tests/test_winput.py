@@ -130,3 +130,31 @@ def test_right_click_on_the_spot_nudges_with_real_mouse_input_and_ends_on_the_pi
     assert xs == [1013, 1012]
     pos = [e for e in m._u.events if e[1] == "pos"]
     assert pos[-1][2:] == (1012, 633)  # pinned on the exact pixel before pressing
+
+
+def test_mouse_event_api_sends_the_same_right_click(monkeypatch):
+    m = winput.Win32Mouse(right_hover_s=0, right_press_s=0.05, right_api="mouse_event")
+    fake = FakeUser32()
+    legacy = []
+    fake.mouse_event = lambda f, x, y, d, e: legacy.append((time.perf_counter(), f))
+    m._u = fake
+    monkeypatch.setattr(winput, "cursor_pos", lambda: (900, 500))
+    m.right_click(900, 500)
+    assert [f for _, f in legacy] == [RIGHT_DOWN, RIGHT_UP]
+    assert legacy[1][0] - legacy[0][0] >= 0.05 - 0.005
+    assert RIGHT_DOWN not in [e[2] for e in fake.inputs()]  # the buttons did not go through SendInput
+    m.left_click(900, 500)
+    assert [e[2] for e in fake.inputs()][-2:] == [LEFT_DOWN, LEFT_UP]  # left click unchanged
+
+
+def test_right_click_here_does_not_move_the_cursor(monkeypatch):
+    m = winput.Win32Mouse(right_press_s=0.01)
+    m._u = FakeUser32()
+    m.right_click_here()
+    assert [e[2] for e in m._u.inputs()] == [RIGHT_DOWN, RIGHT_UP]
+    assert not [e for e in m._u.events if e[1] == "pos"]
+
+
+def test_unknown_api_is_refused():
+    with pytest.raises(ValueError):
+        winput.Win32Mouse(right_api="hid")

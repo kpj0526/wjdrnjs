@@ -67,11 +67,11 @@ GLIDE_STEPS = 4  # SendInput moves on the way to the right-click target
 class Win32Mouse:
     """Real input. Moves with SetCursorPos, then sends button down/up via SendInput.
 
-    The right click sends button down and up in one SendInput call: a plain click, the button
-    is never held. Right after a left click on the same point the cursor is already there, so it
-    goes out at once. Only when the cursor is elsewhere does it first glide onto the point with
-    real SendInput mouse moves (some games only update what is under the cursor from mouse-move
-    input, not from SetCursorPos). right_hover_s (default 0) adds a rest before the click.
+    Both buttons are clicked the same way: down, press_s (30 ms, like a quick finger click; a
+    down and up with no gap is missed by games that read the button state once per frame), up.
+    Right after a left click on the same point the cursor is already there, so the right click
+    follows at once. Only when the cursor is elsewhere does it first glide onto the point with
+    real SendInput mouse moves. right_hover_s (default 0) adds a rest before the right click.
     """
 
     live = True
@@ -95,17 +95,6 @@ class Win32Mouse:
             time.sleep(self.press_s)
         finally:
             self._send(up)  # never leave a button held down
-
-    def _click_now(self, down: int, up: int) -> None:
-        """Button down and up in one SendInput call: nothing can come between them."""
-        arr = (_INPUT * 2)(_INPUT(type=0), _INPUT(type=0))
-        arr[0].mi = _MOUSEINPUT(0, 0, 0, down, 0, 0)
-        arr[1].mi = _MOUSEINPUT(0, 0, 0, up, 0, 0)
-        sent = self._u.SendInput(2, arr, ctypes.sizeof(_INPUT))
-        if sent == 1:
-            self._send(up)  # never leave a button held down
-        if sent == 0:
-            raise InputBlocked("SendInput was blocked; if the game runs as administrator, run this tool as administrator too")
 
     def _input_move(self, x: int, y: int) -> None:
         """One absolute SendInput mouse move to screen pixel (x, y) on the virtual desktop."""
@@ -145,7 +134,7 @@ class Win32Mouse:
             self.glide(x, y)
         if self.right_hover_s > 0:
             time.sleep(self.right_hover_s)  # optional rest on the point before clicking
-        self._click_now(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
+        self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
 
 
 def cursor_pos() -> tuple[int, int] | None:

@@ -45,9 +45,8 @@ the installation offline.
 | Rest on point before right click | `right_click_hover` | 0 | Optional rest on the point before the right click. |
 | Max cycles | `max_cycles` | 0 | 0 = until stopped. |
 
-The right click goes out right after the left click's button-up, on the same point, as a plain
-click: button down and up are sent together, never held. The left
-click holds its button 30 ms. All times are in seconds; Stop and F12 interrupt any wait.
+The right click goes out right after the left click's button-up, on the same point. Both
+buttons are clicked the same way: pressed for 30 ms (a quick finger click), then released. All times are in seconds; Stop and F12 interrupt any wait.
 
 ## Run from source
 

@@ -65,34 +65,18 @@ def test_right_click_glides_onto_the_target_with_real_mouse_moves(mouse):
     assert kinds[-3:] == [("pos", (1012, 633)), ("input", RIGHT_DOWN), ("input", RIGHT_UP)]
 
 
-def test_right_click_rests_on_target_then_clicks_without_holding(mouse):
+def test_right_click_rests_on_target_then_clicks_like_the_left_click(mouse):
     mouse.right_click(1012, 633)
     pinned = next(e[0] for e in mouse._u.events if e[1] == "pos")
-    down = next(e for e in mouse._u.inputs() if e[2] == RIGHT_DOWN)
-    up = next(e for e in mouse._u.inputs() if e[2] == RIGHT_UP)
-    assert down[0] - pinned >= 0.08 - 0.005  # the configured rest
-    # down and up go in the same SendInput call: a click, never a hold
-    assert down[5] == up[5] == 2 and down[0] == up[0]
-
-
-def test_partly_sent_right_click_still_releases_the_button(mouse):
-    calls = []
-    real = mouse._u.SendInput
-
-    def one_of_two(n, ref, size):
-        calls.append(n)
-        r = real(n, ref, size)
-        return 1 if n == 2 else r
-
-    mouse._u.SendInput = one_of_two
-    mouse.right_click(10, 10)
-    assert calls[-1] == 1 and mouse._u.inputs()[-1][2] == RIGHT_UP
+    down, up = mouse._u.time_of(RIGHT_DOWN), mouse._u.time_of(RIGHT_UP)
+    assert down - pinned >= 0.08 - 0.005  # the configured rest
+    assert 0.03 - 0.005 <= up - down < 0.1  # a quick click: long enough for one game frame, never a hold
 
 
 def test_left_click_is_unchanged(mouse):
     mouse.left_click(900, 500)
     assert [e[2] for e in mouse._u.inputs()] == [LEFT_DOWN, LEFT_UP]
-    assert mouse._u.time_of(LEFT_UP) - mouse._u.time_of(LEFT_DOWN) < 0.1
+    assert 0.03 - 0.005 <= mouse._u.time_of(LEFT_UP) - mouse._u.time_of(LEFT_DOWN) < 0.1
 
 
 def test_blocked_glide_raises_input_blocked_and_never_presses(monkeypatch):
@@ -132,3 +116,5 @@ def test_right_click_goes_out_right_after_the_left_click(monkeypatch):
     flags = [e[2] for e in m._u.inputs()]
     assert flags == [LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP]  # no moves in between
     assert m._u.time_of(RIGHT_DOWN) - m._u.time_of(LEFT_UP) < 0.01
+    held = [m._u.time_of(LEFT_UP) - m._u.time_of(LEFT_DOWN), m._u.time_of(RIGHT_UP) - m._u.time_of(RIGHT_DOWN)]
+    assert all(0.03 - 0.005 <= h < 0.1 for h in held), held  # both buttons clicked the same way

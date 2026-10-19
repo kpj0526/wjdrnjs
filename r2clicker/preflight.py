@@ -5,10 +5,11 @@ here with what to do about it, instead of surfacing mid-run. A report with any F
 not start a run; the GUI enforces that. Nothing here clicks or moves the mouse.
 
 Checked:
-- settings (including the click points) are valid
+- settings (including manual points) are valid
 - the game window is found, not minimized, with a usable client area
 - this process is DPI aware and the client size matches the reference aspect ratio
-- the click points map inside the client
+- one frame can be captured, has the client size and is not blank
+- the candidate points (manual or automatic) map inside the client
 - admin rights: a game running as administrator blocks clicks from a normal process
 - DRY RUN / LIVE state
 """
@@ -19,6 +20,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .candidates import build_candidates
+from .capture import CaptureError, is_blank
 from .config import Settings
 from .geometry import Mapping, WindowNotFound, resolve_mapping
 
@@ -152,6 +155,7 @@ def window_elevated(hwnd: int) -> bool | None:
 
 def run_preflight(
     s: Settings,
+    grab: Callable[[Mapping], object],
     live: bool,
     resolve: Callable[[str, int, int], tuple[Mapping, str]] = resolve_mapping,
     dpi_awareness: Callable[[], int | None] = process_dpi_awareness,
@@ -174,7 +178,7 @@ def run_preflight(
         for p in problems:
             r.add("settings", FAIL, p)
         return r
-    r.add("settings", OK, f"valid ({len(s.manual_points)} click points)")
+    r.add("settings", OK, f"valid ({len(s.manual_points)} manual points)" if s.manual_points else "valid")
 
     # 3. game window
     try:
@@ -213,19 +217,39 @@ def run_preflight(
         aspect, ref_aspect = m.width / m.height, s.ref_w / s.ref_h
         if abs(aspect / ref_aspect - 1) > ASPECT_TOLERANCE:
             r.add("client size", WARN, f"client {m.width}x{m.height} is not {s.ref_w}:{s.ref_h}; points are "
-                                       "stretched. Use a 16:9 game resolution or re-pick the points on a capture")
+                                       "stretched. Use a 16:9 game resolution or re-pick the ROI/points on a capture")
         else:
             r.add("client size", OK, f"{m.width}x{m.height} (scale {m.sx:.3f} x {m.sy:.3f} of the reference)")
 
-    # 5. click points
-    outside = [p for p in s.manual_points if not m.contains_screen(*m.to_screen(*p))]
-    if outside:
-        r.add("click points", FAIL, f"{len(outside)} points map outside the game client, e.g. {outside[0]}")
+    # 5. capture
+    frame = None
+    try:
+        frame = grab(m)
+    except CaptureError as e:
+        r.add("capture", FAIL, str(e))
+    except Exception as e:
+        r.add("capture", FAIL, f"capture failed: {e}")
     else:
-        r.add("click points", OK, f"{len(s.manual_points)} points, each left + right clicked in list order "
-                                  "every cycle")
+        if is_blank(frame):
+            r.add("capture", FAIL, "the captured game frame is blank (black or one colour): the nameplate "
+                                   "check cannot work. Bring the game to the front, or try capture backend "
+                                   "'screen' / 'window'")
+            frame = None
+        else:
+            r.add("capture", OK, f"frame {frame.shape[1]}x{frame.shape[0]}")
 
-    # 6. administrator rights
+    # 6. candidates
+    cands = build_candidates(s, frame, m if frame is not None else None)
+    outside = [(c.x, c.y) for c in cands if not m.contains_screen(*m.to_screen(c.x, c.y))]
+    kind = "manual points (in list order)" if s.manual_points else "automatic grid points"
+    if not cands:
+        r.add("candidates", FAIL, f"no clickable {kind}: the ROI is fully covered by the player/HUD areas")
+    elif outside:
+        r.add("candidates", FAIL, f"{len(outside)} points map outside the game client, e.g. {outside[0]}")
+    else:
+        r.add("candidates", OK, f"{len(cands)} {kind}; first {min(len(cands), s.max_attempts)} tried per cycle")
+
+    # 7. administrator rights
     me, game = me_elevated(), game_elevated(m.hwnd) if m.hwnd else None
     if not m.hwnd:
         r.add("admin rights", INFO, "not checked (no game window)")
@@ -248,12 +272,13 @@ def main(out: str) -> int:
     import json
     from pathlib import Path
 
+    from .capture import Grabber
     from .geometry import enable_dpi_awareness
     from .paths import settings_path
 
     enable_dpi_awareness()
     s = Settings.load(settings_path())
-    r = run_preflight(s, live=not s.dry_run)
+    r = run_preflight(s, Grabber(s.capture_backend).grab, live=not s.dry_run)
     d = r.as_dict() | {"settings_file": str(settings_path()), "settings_warnings": s.load_warnings}
     Path(out).write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
     if sys.stdout:

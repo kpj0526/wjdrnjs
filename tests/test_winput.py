@@ -24,11 +24,9 @@ class FakeUser32:
         self.block = block
 
     def SendInput(self, n, ref, size):
-        items = [ref[i] for i in range(n)] if n > 1 else [ref._obj]
-        now = time.perf_counter()
-        for inp in items:
-            self.events.append((now, "input", inp.mi.dwFlags, inp.mi.dx, inp.mi.dy, n))
-        return 0 if self.block else n
+        mi = ref._obj.mi
+        self.events.append((time.perf_counter(), "input", mi.dwFlags, mi.dx, mi.dy))
+        return 0 if self.block else 1
 
     def SetCursorPos(self, x, y):
         self.events.append((time.perf_counter(), "pos", x, y))
@@ -79,6 +77,16 @@ def test_left_click_is_unchanged(mouse):
     assert 0.03 - 0.005 <= mouse._u.time_of(LEFT_UP) - mouse._u.time_of(LEFT_DOWN) < 0.1
 
 
+def test_right_click_on_the_cursor_position_goes_out_at_once(monkeypatch):
+    m = winput.Win32Mouse(right_hover_s=0)
+    m._u = FakeUser32()
+    monkeypatch.setattr(winput, "cursor_pos", lambda: (900, 500))
+    t0 = time.perf_counter()
+    m.right_click(900, 500)
+    assert [e[2] for e in m._u.inputs()] == [RIGHT_DOWN, RIGHT_UP]  # no glide moves
+    assert m._u.time_of(RIGHT_DOWN) - t0 < 0.01
+
+
 def test_blocked_glide_raises_input_blocked_and_never_presses(monkeypatch):
     m = winput.Win32Mouse()
     m._u = FakeUser32(block=True)
@@ -89,32 +97,11 @@ def test_blocked_glide_raises_input_blocked_and_never_presses(monkeypatch):
 
 
 def test_right_click_timing_settings_validate():
-    assert Settings(manual_points=[(1, 1)]).validate() == []
-    errs = Settings(right_click_hover=5, manual_points=[(1, 1)]).validate()
+    assert Settings().validate() == []
+    errs = Settings(right_click_hover=5).validate()
     assert any("right_click_hover" in e for e in errs)
 
 
 def test_gui_form_offers_the_right_click_timing():
     names = [f[0] for f in gui.FORM]
     assert "right_click_hover" in names and "right_click_hold" not in names
-
-
-def test_right_click_goes_out_right_after_the_left_click(monkeypatch):
-    m = winput.Win32Mouse()  # defaults: no rest before the right click
-    m._u = FakeUser32()
-    at = {"pos": (1500, 300)}
-    monkeypatch.setattr(winput, "cursor_pos", lambda: at["pos"])
-    real_move = m.move
-
-    def move(x, y):
-        real_move(x, y)
-        at["pos"] = (x, y)
-
-    m.move = move
-    m.left_click(1012, 633)
-    m.right_click(1012, 633)
-    flags = [e[2] for e in m._u.inputs()]
-    assert flags == [LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP]  # no moves in between
-    assert m._u.time_of(RIGHT_DOWN) - m._u.time_of(LEFT_UP) < 0.01
-    held = [m._u.time_of(LEFT_UP) - m._u.time_of(LEFT_DOWN), m._u.time_of(RIGHT_UP) - m._u.time_of(RIGHT_DOWN)]
-    assert all(0.03 - 0.005 <= h < 0.1 for h in held), held  # both buttons clicked the same way

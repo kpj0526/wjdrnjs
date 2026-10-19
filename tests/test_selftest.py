@@ -18,8 +18,8 @@ def test_selftest_passes_from_source(tmp_path):
                        capture_output=True, text=True, timeout=120)
     r = json.loads(out.read_text(encoding="utf-8"))
     assert p.returncode == 0 and r["passed"], r
-    assert set(r["checks"]) == {"sample", "tk_and_window_capture", "dry_cycle", "preflight", "dpi_awareness",
-                                "settings_io", "settings_untouched"}
+    assert set(r["checks"]) == {"sample", "tk_and_window_capture", "candidates", "detect", "dry_cycle",
+                                "manual_cycle", "preflight", "dpi_awareness", "settings_io", "settings_untouched"}
     assert not list((tmp_path / "home").glob("settings*.json"))
 
 

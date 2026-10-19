@@ -14,50 +14,88 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 REF_W, REF_H = 1600, 900
-SETTINGS_VERSION = 4  # 2: hide_helper_from_capture is an explicit opt-in; 3: plain auto clicker;
-                      # 4: right click right after the left click (no hover rest by default)
+SETTINGS_VERSION = 5  # 2: hide_helper_from_capture is an explicit opt-in (default off)
+                      # 5: right click right after a successful check (0.2.x files: auto clicker)
 
 Rect = tuple[int, int, int, int]  # x1, y1, x2, y2 (x2/y2 exclusive)
 Point = tuple[int, int]
 MAX_MANUAL_POINTS = 200
 
-# Settings of the old nameplate-checking releases. They mean nothing now and are dropped on load.
-REMOVED_KEYS = frozenset({
-    "roi", "grid_step", "order", "stagger", "player_center", "player_radius", "ui_rects",
-    "prefer_mob_pixels", "mob_score_min", "sticky_radius", "verify_delay", "verify_timeout",
-    "settle_delay", "max_attempts", "max_consecutive_failed_cycles", "park_point", "right_click_target",
-    "verify_mode", "verify_margin", "white_min", "white_max_spread", "green_min_g", "green_min_delta",
-    "diff_min", "require_outline", "outline_dark_max", "outline_radius", "max_stroke_run",
-    "verify_ignore_rects", "plate_w", "plate_h", "plate_min_white", "marker_search", "marker_min_green",
-    "template_path", "template_min_score", "save_failure_shots", "right_click_hold",
-})
+# HUD regions of the reference screenshot that must never be clicked.
+DEFAULT_UI_RECTS: list[Rect] = [
+    (0, 0, 170, 165),        # minimap
+    (730, 0, 875, 32),       # clock
+    (940, 0, 1600, 165),     # buff icons
+    (0, 680, 400, 835),      # chat
+    (0, 835, 535, 900),      # server/zone line, R2 logo
+    (530, 750, 915, 900),    # level / HP / MP panel, quick slot
+    (915, 695, 1320, 900),   # skill hotbar
+]
 
 
 @dataclass
 class Settings:
-    """Auto clicker: every cycle clicks the picked points in order, each with a left click and right
-    after it a right click, then waits wait_interval. Nothing on screen is checked."""
-
     # --- window / coordinate mapping ---
     window_title: str = "R2"          # substring of the game window title; "" = whole primary screen
     ref_w: int = REF_W
     ref_h: int = REF_H
-    capture_backend: str = "auto"     # preview only: auto | window (PrintWindow) | screen (mss + occlusion check)
+    capture_backend: str = "auto"     # auto | window (PrintWindow) | screen (mss + occlusion check)
 
-    # --- click points (reference coordinates), clicked in this order every cycle ---
-    manual_points: list[Point] = field(default_factory=list)
+    # --- search area and candidate pattern ---
+    roi: Rect = (350, 130, 1250, 670)
+    grid_step: int = 55
+    order: str = "center_out"         # center_out | raster | snake | spiral
+    stagger: bool = True              # offset every other row by step/2 (hex-like coverage)
+    player_center: tuple[int, int] = (800, 440)
+    player_radius: int = 75
+    ui_rects: list[Rect] = field(default_factory=lambda: list(DEFAULT_UI_RECTS))
+    prefer_mob_pixels: bool = True    # rank candidates by local colour/texture score
+    mob_score_min: float = 0.0        # candidates scoring below this are dropped (0 = keep all)
+    sticky_radius: int = 120          # try points near the last success first (0 = off)
+    manual_points: list[Point] = field(default_factory=list)  # user-picked click points, tried in
+                                      # this order; when non-empty they replace the automatic grid
 
     # --- timing (seconds) ---
-    wait_interval: float = 5.0        # from the last right click of a cycle to the first left click of the next
-    right_click_delay: float = 0.0    # between a point's left click and its right click
-    point_delay: float = 0.1          # between one point's right click and the next point's left click
-    right_click_hover: float = 0.0    # optional rest on the point before the right click
+    wait_interval: float = 5.0        # seconds from the end of a cycle (its right click, or its last
+                                      # failed attempt) to the start of the next cycle
+    verify_delay: float = 0.25        # after left click, before verification screenshot
+    verify_timeout: float = 0.6       # keep re-checking until this long after the click
+    settle_delay: float = 0.08        # after moving cursor off, before the baseline shot
+    right_click_delay: float = 0.0    # between successful verification and right click (0 = at once)
+    right_click_hover: float = 0.03   # cursor rests on the target this long before the right click
 
     # --- limits ---
+    max_attempts: int = 30            # left clicks per cycle before giving up the cycle
     max_cycles: int = 0               # 0 = unlimited
+    max_consecutive_failed_cycles: int = 3  # stop the run after this many empty cycles
 
     # --- clicking ---
     dry_run: bool = True
+    park_point: tuple[int, int] = (1480, 300)  # cursor rest point (empty floor, off ROI)
+    right_click_target: str = "same"  # same | park  (where the right click lands)
+
+    # --- verification (nameplate: white text + green markers) ---
+    verify_mode: str = "diff"         # diff = only pixels new since baseline; absolute = as-is
+    verify_margin: int = 80           # verify area = ROI grown by this (nameplate floats above mob)
+    white_min: int = 215              # min channel value for "white"
+    white_max_spread: int = 30        # max(R,G,B)-min(R,G,B) for "white"
+    green_min_g: int = 150
+    green_min_delta: int = 60         # G-R and G-B both at least this
+    diff_min: int = 40                # per-pixel change needed to count as new (diff mode)
+    require_outline: bool = True      # text pixels must touch dark outline/background (rejects glows)
+    outline_dark_max: int = 100       # mean RGB at or below this counts as dark
+    outline_radius: int = 2
+    max_stroke_run: int = 24          # straight white runs at least this long are bars/frames, not text
+    verify_ignore_rects: list[Rect] = field(default_factory=lambda: [(735, 345, 865, 480)])  # player HP bar + skill flash
+    plate_w: int = 90                 # expected nameplate text box (reference px)
+    plate_h: int = 16
+    plate_min_white: int = 60         # min white pixels inside the best text box
+    marker_search: int = 40           # look for green this far around the text box
+    marker_min_green: int = 12        # min green pixels around the text box
+    plate_max_distance: int = 150     # nameplate centre at most this far from the clicked point (0 = anywhere);
+                                      # rejects other mobs' or players' nameplates elsewhere on screen
+    template_path: str = ""           # optional cropped nameplate PNG for template matching
+    template_min_score: float = 0.55
 
     # --- safety ---
     emergency_hotkey: str = "F12"
@@ -72,6 +110,7 @@ class Settings:
 
     # --- logging ---
     log_dir: str = "logs"             # relative paths are resolved against the app data folder
+    save_failure_shots: bool = False
 
     settings_version: int = SETTINGS_VERSION
     load_warnings: list[str] = field(default_factory=list, repr=False, compare=False)
@@ -110,15 +149,10 @@ class Settings:
         s = cls()
         known = {f.name for f in fields(cls)}
         s.extra = {k: v for k, v in data.items() if k not in known and k not in REMOVED_KEYS}
-        if REMOVED_KEYS & data.keys():
-            s.load_notes.append("old search-area/nameplate settings ignored: this version just clicks "
-                                "the click points (they are kept)")
         version = data.get("settings_version") if isinstance(data.get("settings_version"), int) else 1
-        # before version 3, right_click_delay was the pause after a nameplate check, not the gap
-        # between left and right click: the new default (right away) applies instead
-        skip = {"right_click_delay"} if version < 3 else set()
-        if version < 4:  # 0.2.0 saved a 0.03 s rest as its default; the right click is now immediate
-            skip.add("right_click_hover")
+        # before 5 the right click waited 0.1 s after the check (0.1.x) or meant something else (0.2.x):
+        # the new defaults (right away) apply
+        skip = {"right_click_delay", "right_click_hover"} if version < 5 else set()
         for f in fields(cls):
             if f.name not in data or f.name in _INTERNAL or f.name in skip:
                 continue
@@ -154,57 +188,93 @@ class Settings:
     def validate(self, include_manual: bool = True) -> list[str]:
         """Human-readable problems that must be fixed before a run. Empty list = OK.
 
-        include_manual=False leaves out manual_point_problems(): the GUI uses that so the form can
-        be applied and saved while the point list is still empty.
+        include_manual=False leaves out manual_point_problems(): the GUI uses that so changing
+        the ROI is still possible while it marks the manual points the change made unsafe.
         """
-        from .capture import BACKENDS
+        from .candidates import ORDERS
         from .winput import VK_CODES
 
         e: list[str] = []
-        if self.ref_w <= 0 or self.ref_h <= 0:
+        W, H = self.ref_w, self.ref_h
+        if W <= 0 or H <= 0:
             e.append("reference size must be positive")
+        if len(self.roi) != 4:
+            e.append("ROI needs x1,y1,x2,y2")
+        else:
+            x1, y1, x2, y2 = self.roi
+            if not (0 <= x1 < x2 <= W and 0 <= y1 < y2 <= H):
+                e.append(f"ROI must satisfy 0 <= x1 < x2 <= {W} and 0 <= y1 < y2 <= {H}")
+            elif x2 - x1 < self.grid_step or y2 - y1 < self.grid_step:
+                e.append("ROI is smaller than one grid step")
+        for name in ("player_center", "park_point"):
+            pt = getattr(self, name)
+            if len(pt) != 2:
+                e.append(f"{name} needs x,y")
+            elif not (0 <= pt[0] < W and 0 <= pt[1] < H):
+                e.append(f"{name} must be inside the {W}x{H} game client")
+        if len(self.park_point) == 2 and len(self.roi) == 4:
+            x1, y1, x2, y2 = self.roi
+            px, py = self.park_point
+            if x1 <= px < x2 and y1 <= py < y2:
+                e.append("park point must be outside the ROI (the cursor would hover mobs)")
+        for name in ("ui_rects", "verify_ignore_rects"):
+            for r in getattr(self, name):
+                if len(r) != 4 or r[0] >= r[2] or r[1] >= r[3]:
+                    e.append(f"{name}: bad rect {r!r}")
         rng = {
-            "wait_interval": (0, 86400), "right_click_delay": (0, 10), "point_delay": (0, 60),
-            "right_click_hover": (0, 2), "max_cycles": (0, 10**9),
+            "grid_step": (5, 500), "player_radius": (0, 800), "sticky_radius": (0, 2000),
+            "wait_interval": (0, 86400), "verify_delay": (0, 10), "verify_timeout": (0, 30),
+            "settle_delay": (0, 5), "right_click_delay": (0, 10),
+            "right_click_hover": (0, 2), "plate_max_distance": (0, 2000),
+            "max_attempts": (1, 1000), "max_cycles": (0, 10**9), "max_consecutive_failed_cycles": (0, 10**6),
+            "verify_margin": (0, 400), "white_min": (0, 255), "white_max_spread": (0, 255),
+            "green_min_g": (0, 255), "green_min_delta": (0, 255), "diff_min": (0, 255),
+            "outline_dark_max": (0, 255), "outline_radius": (0, 10), "max_stroke_run": (0, 400),
+            "plate_w": (4, 800), "plate_h": (4, 200), "plate_min_white": (1, 10**6),
+            "marker_search": (0, 400), "marker_min_green": (0, 10**6), "template_min_score": (0, 1),
         }
         for name, (lo, hi) in rng.items():
             v = getattr(self, name)
             if not isinstance(v, (int, float)) or isinstance(v, bool) or not (lo <= v <= hi):
                 e.append(f"{name} must be a number in [{lo}, {hi}] (got {v!r})")
-        if self.capture_backend not in BACKENDS:
-            e.append(f"capture_backend must be one of {', '.join(BACKENDS)}")
+        numeric = all(isinstance(v, (int, float)) for v in (self.verify_timeout, self.verify_delay))
+        if numeric and self.verify_timeout < self.verify_delay:
+            e.append("verify_timeout must be >= verify_delay")
+        from .capture import BACKENDS
+
+        choices = {"capture_backend": BACKENDS, "order": ORDERS, "verify_mode": ("diff", "absolute"),
+                   "right_click_target": ("same", "park")}
+        for name, ok in choices.items():
+            if getattr(self, name) not in ok:
+                e.append(f"{name} must be one of {', '.join(ok)}")
         if self.emergency_hotkey and self.emergency_hotkey.upper() not in VK_CODES:
             e.append(f"emergency_hotkey must be one of {', '.join(VK_CODES)}")
         if not self.dry_run and not self.emergency_hotkey and not self.corner_failsafe:
             e.append("live mode needs an emergency hotkey or the corner failsafe")
+        if self.template_path and not Path(self.template_path).is_file():
+            e.append(f"template file not found: {self.template_path}")
         if include_manual:
             e.extend(self.manual_point_problems())
         return e
 
     def manual_point_problems(self) -> list[str]:
-        """No points, too many, or points outside the game client."""
-        if not self.manual_points:
-            return ["no click points: choose 'click points' and click the preview to add them"]
+        """Manual points that would be refused at run time (outside the ROI, player or HUD)."""
+        from .candidates import manual_point_reason
+
         e: list[str] = []
         if len(self.manual_points) > MAX_MANUAL_POINTS:
-            e.append(f"at most {MAX_MANUAL_POINTS} click points (got {len(self.manual_points)})")
+            e.append(f"at most {MAX_MANUAL_POINTS} manual points (got {len(self.manual_points)})")
+        if len(self.roi) != 4:
+            return e
         for i, p in enumerate(self.manual_points, 1):
-            why = point_reason(p, self)
+            why = manual_point_reason(p, self)
             if why:
-                e.append(f"click point {i} {tuple(p)}: {why}")
+                e.append(f"manual point {i} {tuple(p)}: {why}")
         return e
 
 
-def point_reason(p, s: Settings) -> str | None:
-    """Why a click point cannot be used, or None."""
-    if len(p) != 2:
-        return "needs x,y"
-    if not (0 <= p[0] < s.ref_w and 0 <= p[1] < s.ref_h):
-        return f"outside the {s.ref_w}x{s.ref_h} game client"
-    return None
-
-
 _INTERNAL = ("load_warnings", "load_notes", "extra")
+REMOVED_KEYS = frozenset({"right_click_hold", "point_delay"})  # settings of earlier releases that no longer exist
 
 
 def _backup_unreadable(p: Path) -> Path:
@@ -221,6 +291,8 @@ def _backup_unreadable(p: Path) -> Path:
 
 def _coerce(v, default, name):
     """Convert a JSON value to the type of the default (tuples, rect lists, bool, int, float, str)."""
+    if name in ("ui_rects", "verify_ignore_rects"):
+        return [tuple(int(x) for x in r) for r in v]
     if name == "manual_points":
         pts = [tuple(int(x) for x in p) for p in v]
         if any(len(p) != 2 for p in pts):

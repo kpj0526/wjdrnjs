@@ -22,16 +22,6 @@ def _hidden_windows(monkeypatch):
     monkeypatch.setenv("R2_HIDE_TEST_WINDOWS", "1")
 
 
-class _Ev:
-    def __init__(self, x, y):
-        self.x, self.y = x, y
-
-
-def _click(app, ref_x, ref_y):
-    """Click the preview at a reference point (the canvas is half of 1600x900)."""
-    app._on_release(_Ev(ref_x // 2, ref_y // 2))
-
-
 def test_gui_module_imports():
     from r2clicker import gui
 
@@ -85,6 +75,23 @@ def test_save_writes_settings_into_data_dir(app, tmp_path):
     assert Settings.load(tmp_path / "settings.json").wait_interval == 3.75
 
 
+def test_check_on_sample_image_finds_nothing(app):
+    app.test_verify()
+    assert app.verify_box is not None  # the best (rejected) box is drawn for inspection
+
+
+def test_roi_drag_updates_field(app):
+    class E:
+        def __init__(self, x, y):
+            self.x, self.y = x, y
+
+    app.drag_mode.set("roi")
+    app._on_press(E(200, 100))
+    app._on_drag(E(500, 300))
+    app._on_release(E(500, 300))
+    assert app.settings.roi == (400, 200, 1000, 600)  # the canvas is half of 1600x900
+
+
 # --- every action uses the form as typed, without Enter/Apply -----------------------------
 
 
@@ -116,21 +123,21 @@ def test_capture_refused_when_form_invalid(app, monkeypatch):
     calls = _fake_capture(app, monkeypatch, gui)
     before = app.settings
     app.vars["window_title"][0].set("NewTitle")
-    app.vars["wait_interval"][0].set("-1")  # invalid
+    app.vars["grid_step"][0].set("1")  # invalid
     app.capture_preview()
     assert calls == [] and app.errors
     assert app.settings is before and app.settings.window_title != "NewTitle"
 
 
-def test_load_image_applies_typed_form_first(app, monkeypatch):
+def test_load_image_applies_typed_roi_first(app, monkeypatch):
     from r2clicker import gui
     from r2clicker.paths import sample_image
 
     opened = []
     monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kw: opened.append(1) or str(sample_image()))
-    app.vars["point_delay"][0].set("0.4")
+    app.vars["roi"][0].set("400, 150, 1200, 650")
     app.load_image()
-    assert opened and app.settings.point_delay == 0.4
+    assert opened and app.settings.roi == (400, 150, 1200, 650)
 
 
 def test_load_image_not_opened_when_form_invalid(app, monkeypatch):
@@ -138,9 +145,16 @@ def test_load_image_not_opened_when_form_invalid(app, monkeypatch):
 
     opened = []
     monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kw: opened.append(1) or "")
-    app.vars["point_delay"][0].set("abc")
+    app.vars["roi"][0].set("1, 2, 3")
     app.load_image()
     assert not opened and app.errors
+
+
+def test_check_on_image_uses_typed_thresholds_and_keeps_mode(app):
+    app.vars["plate_min_white"][0].set("77")
+    app.test_verify()
+    assert app.settings.plate_min_white == 77
+    assert app.settings.verify_mode == "diff"  # the single-image check must not change the saved mode
 
 
 def test_start_uses_typed_wait_interval(app, monkeypatch):
@@ -149,7 +163,7 @@ def test_start_uses_typed_wait_interval(app, monkeypatch):
     started = []
 
     class FakeBot:
-        def __init__(self, s, mouse):
+        def __init__(self, s, grab, mouse):
             started.append((s, mouse))
             self.stop_reason = ""
 
@@ -161,7 +175,6 @@ def test_start_uses_typed_wait_interval(app, monkeypatch):
 
     monkeypatch.setattr(gui, "Bot", FakeBot)
     _fake_capture(app, monkeypatch, gui)  # preflight needs a game window
-    _click(app, 600, 300)
     app.vars["wait_interval"][0].set("9.5")
     app.vars["window_title"][0].set("Typed")
     app.start()
@@ -259,12 +272,12 @@ def test_monitor_query_and_remote_check_run_once_at_startup(tk_root, tmp_path, m
     monkeypatch.setattr(gui, "resolve_mapping", lambda *a: (Mapping(0, 0, 1600, 900), "fake"))
     monkeypatch.setattr(app.grabber, "grab", lambda m: app.frame.copy())
     started = []
-    monkeypatch.setattr(gui, "Bot", lambda s, mouse: started.append(1) or type(
+    monkeypatch.setattr(gui, "Bot", lambda s, grab, mouse: started.append(1) or type(
         "B", (), {"run": lambda self: None, "stop": lambda self, w="": None, "stop_reason": ""})())
     for _ in range(3):
         app.capture_preview()
+        app.test_verify()
         app.apply()
-    _click(app, 600, 300)
     app.start()
     app.thread.join(2)
     assert started and calls == {"areas": 1, "remote": 1}
@@ -368,22 +381,38 @@ def test_startup_crash_is_written_to_a_log(tmp_path, monkeypatch):
 # --- manual candidate points ------------------------------------------------------------------
 
 
-def test_clicking_the_preview_adds_numbered_points_in_click_order(app):
-    for p in ((600, 300), (1000, 250), (500, 550), (800, 440), (100, 850)):  # player and HUD spots too
+class _Ev:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
+
+def _click(app, ref_x, ref_y):
+    """Click the preview at a reference point (the canvas is half of 1600x900)."""
+    app._on_press(_Ev(ref_x // 2, ref_y // 2))
+    app._on_release(_Ev(ref_x // 2, ref_y // 2))
+
+
+def test_manual_mode_adds_numbered_points_in_click_order(app):
+    app.drag_mode.set("manual")
+    for p in ((600, 300), (1000, 250), (500, 550)):
         _click(app, *p)
-    assert app.settings.manual_points == [(600, 300), (1000, 250), (500, 550), (800, 440), (100, 850)]
+    assert app.settings.manual_points == [(600, 300), (1000, 250), (500, 550)]
     labels = [app.canvas.itemcget(i, "text") for i in app.canvas.find_withtag("manual_label")]
-    assert labels == ["1", "2", "3", "4", "5"]
-    assert app.manual_list.size() == 5 and app.manual_list.get(1).strip().startswith("2. (1000, 250)")
+    assert labels == ["1", "2", "3"]
+    assert app.manual_list.size() == 3 and app.manual_list.get(1).strip().startswith("2. (1000, 250)")
+    assert app.settings.roi == (350, 130, 1250, 670)  # the ROI drag did not run
 
 
-def test_point_outside_the_game_client_is_refused(app):
-    assert not app.add_manual_point(1700, 300)
+@pytest.mark.parametrize("pt, why", [((100, 400), "ROI"), ((800, 440), "player"), ((1000, 150), "UI")])
+def test_manual_point_outside_roi_or_in_avoid_area_is_refused(app, pt, why):
+    app.drag_mode.set("manual")
+    _click(app, *pt)
     assert app.settings.manual_points == []
-    assert "not added" in app.manual_info.cget("text") and "outside" in app.manual_info.cget("text")
+    assert "not added" in app.manual_info.cget("text") and why in app.manual_info.cget("text")
 
 
 def test_clicking_an_existing_point_selects_it(app):
+    app.drag_mode.set("manual")
     _click(app, 600, 300)
     _click(app, 1000, 250)
     _click(app, 602, 302)  # within PICK_RADIUS of point 1: select, do not add
@@ -393,6 +422,7 @@ def test_clicking_an_existing_point_selects_it(app):
 def test_delete_move_and_clear_manual_points(app, monkeypatch):
     from r2clicker import gui
 
+    app.drag_mode.set("manual")
     for p in ((600, 300), (1000, 250), (500, 550)):
         _click(app, *p)
     app.manual_list.selection_clear(0, "end")
@@ -411,12 +441,13 @@ def test_delete_move_and_clear_manual_points(app, monkeypatch):
     monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
     app.clear_manual_points()
     assert app.settings.manual_points == [] and app.manual_list.size() == 0
-    assert not app.canvas.find_withtag("manual")
+    assert not app.canvas.find_withtag("manual")  # the automatic grid is drawn again
 
 
 def test_manual_points_saved_and_loaded_as_reference_coordinates(app, tk_root, tmp_path, monkeypatch):
     from r2clicker.config import Settings
 
+    app.drag_mode.set("manual")
     _click(app, 600, 300)
     _click(app, 1000, 250)
     app.save()
@@ -429,22 +460,19 @@ def test_manual_points_saved_and_loaded_as_reference_coordinates(app, tk_root, t
         again.on_close()
 
 
-def test_loaded_point_off_the_client_is_marked_and_start_is_blocked(app, monkeypatch):
+def test_roi_change_marks_points_refused_and_start_is_blocked(app, monkeypatch):
     from r2clicker import gui
 
-    monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("must not start with a bad point"))
-    app._set_manual_points([(600, 300), (1700, 300)])  # e.g. from a hand-edited settings.json
+    monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("must not start with an unsafe manual point"))
+    app.drag_mode.set("manual")
+    _click(app, 600, 300)
+    _click(app, 1000, 250)
+    app.vars["roi"][0].set("350, 130, 800, 670")  # point 2 is now outside
+    app.apply()  # editing is still possible: the point is only marked
+    assert app.settings.roi == (350, 130, 800, 670) and not app.errors
     assert "REFUSED" in app.manual_list.get(1) and "REFUSED" not in app.manual_list.get(0)
     app.start()
-    assert app.thread is None and any("click point 2" in e for e in app.errors)
-
-
-def test_start_without_points_is_refused(app, monkeypatch):
-    from r2clicker import gui
-
-    monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("must not start"))
-    app.start()
-    assert app.thread is None and any("no click points" in e for e in app.errors)
+    assert app.thread is None and any("manual point 2" in e for e in app.errors)
 
 
 def test_start_passes_manual_points_to_bot_in_order(app, monkeypatch):
@@ -453,7 +481,7 @@ def test_start_passes_manual_points_to_bot_in_order(app, monkeypatch):
     started = []
 
     class FakeBot:
-        def __init__(self, s, mouse):
+        def __init__(self, s, grab, mouse):
             started.append((s, mouse))
             self.stop_reason = ""
 
@@ -465,6 +493,7 @@ def test_start_passes_manual_points_to_bot_in_order(app, monkeypatch):
 
     monkeypatch.setattr(gui, "Bot", FakeBot)
     _fake_capture(app, monkeypatch, gui)
+    app.drag_mode.set("manual")
     _click(app, 1000, 250)
     _click(app, 600, 300)
     app.start()
@@ -485,11 +514,22 @@ def test_start_refused_when_preflight_fails_even_live(app, monkeypatch):
     monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("must not start"))
     monkeypatch.setattr(gui, "Win32Mouse", lambda **k: pytest.fail("no live input before preflight passes"))
     monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: pytest.fail("no live prompt either"))
-    _click(app, 600, 300)
     app.vars["window_title"][0].set("NoSuchWindow-r2-gui-test")
     app.dry_var.set(False)
     app.start()
     assert app.thread is None and any("game window" in e for e in app.errors)
+
+
+def test_start_refused_on_blank_capture(app, monkeypatch):
+    import numpy as np
+
+    from r2clicker import gui
+
+    _fake_capture(app, monkeypatch, gui)
+    monkeypatch.setattr(app.grabber, "grab", lambda m: np.zeros((900, 1600, 3), np.uint8))
+    monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("must not start"))
+    app.start()
+    assert app.thread is None and any("blank" in e for e in app.errors)
 
 
 def test_live_prompt_lists_preflight_warnings(app, monkeypatch):
@@ -501,7 +541,6 @@ def test_live_prompt_lists_preflight_warnings(app, monkeypatch):
     asked = []
     monkeypatch.setattr(gui.messagebox, "askyesno", lambda title, msg, **k: asked.append(msg) or False)
     monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("declined: must not start"))
-    _click(app, 600, 300)
     app.vars["window_title"][0].set("")  # whole screen: warns
     app.dry_var.set(False)
     app.start()
@@ -515,12 +554,11 @@ def test_preflight_button_shows_result(app, monkeypatch):
     _fake_capture(app, monkeypatch, gui)
     shown = []
     monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, msg: shown.append(title))
-    _click(app, 600, 300)
     app.preflight_check()
     assert shown == ["Preflight passed"] and not app.errors
-    app.settings.manual_points.append((1700, 440))  # bad point loaded from a file
+    app.settings.manual_points.append((800, 440))  # unsafe point loaded from a file
     app.preflight_check()
-    assert any("click point 2" in e for e in app.errors)
+    assert any("manual point 1" in e for e in app.errors)
 
 
 def test_gui_save_keeps_unknown_keys(tk_root, tmp_path, monkeypatch):
@@ -546,9 +584,8 @@ def test_live_start_uses_the_typed_right_click_timing(app, monkeypatch):
     monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
     made = []
     monkeypatch.setattr(gui, "Win32Mouse", lambda **k: made.append(k) or gui.DryRunMouse())
-    monkeypatch.setattr(gui, "Bot", lambda s, mouse: type(
+    monkeypatch.setattr(gui, "Bot", lambda s, grab, mouse: type(
         "B", (), {"run": lambda self: None, "stop": lambda self, why="": None, "stop_reason": ""})())
-    _click(app, 600, 300)
     app.vars["window_title"][0].set("")
     app.vars["right_click_hover"][0].set("0.2")  # typed, no Apply/Enter
     app.dry_var.set(False)
@@ -563,15 +600,15 @@ def test_live_start_brings_the_game_window_to_the_front(app, monkeypatch, dry, a
     from r2clicker import gui, preflight
 
     monkeypatch.setattr(gui, "resolve_mapping", lambda t, w, h: (Mapping(0, 0, 1600, 900, w, h, hwnd=4321), "game"))
+    monkeypatch.setattr(app.grabber, "grab", lambda m: app.frame.copy())
     monkeypatch.setattr(preflight, "window_elevated", lambda h: False)
     monkeypatch.setattr(preflight, "self_elevated", lambda: False)
     monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
     monkeypatch.setattr(gui, "Win32Mouse", lambda **k: gui.DryRunMouse())
-    monkeypatch.setattr(gui, "Bot", lambda s, mouse: type(
+    monkeypatch.setattr(gui, "Bot", lambda s, grab, mouse: type(
         "B", (), {"run": lambda self: None, "stop": lambda self, why="": None, "stop_reason": ""})())
     seen = []
     monkeypatch.setattr(gui, "activate", lambda h: seen.append(h) or True)
-    _click(app, 600, 300)
     app.dry_var.set(dry)
     app.start()
     app.thread.join(2)

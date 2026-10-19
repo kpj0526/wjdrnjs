@@ -274,3 +274,22 @@ def test_real_printwindow_refusal_falls_back(monkeypatch, tk_root):
         assert len(calls) == 4 + 4  # window backend attempt + auto attempt
     finally:
         top.destroy()
+
+
+def test_engine_keeps_running_when_printwindow_is_refused(monkeypatch, base_img):
+    """End to end: with PrintWindow refused, an auto-backend run still selects via screen capture."""
+    import sys
+
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from test_engine import FakeGame, fast_settings
+
+    from r2clicker.engine import Bot
+
+    game = FakeGame(base_img)
+    m = Mapping(game.m.left, game.m.top, 1600, 900, hwnd=4242)
+    Stub(monkeypatch, [REFUSED])
+    g = Grabber("auto")
+    monkeypatch.setattr(g, "_mss_grab", lambda mm: game.grab(mm))
+    bot = Bot(fast_settings(), g.grab, game, mapping_fn=lambda: (m, "fake"))
+    r = bot.run_cycle()
+    assert r.success and game.right_clicks and g.last_backend == "screen"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import math
 import os
 import queue
 import sys
@@ -15,19 +16,21 @@ from tkinter import filedialog, messagebox, ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from .candidates import ORDERS, build_candidates
+from .candidates import ORDERS, build_candidates, manual_point_reason
 from . import __version__
 from .capture import BACKENDS, CaptureError, Grabber
-from .config import Settings
+from .config import MAX_MANUAL_POINTS, Settings
 from .engine import Bot
 from .geometry import Mapping, WindowNotFound, enable_dpi_awareness, resolve_mapping
 from .paths import data_dir, resolve_in_data_dir, sample_image, settings_path
+from .preflight import run_preflight
 from .vision import load_template, verify
 from .winplace import fit_geometry, is_remote_session, monitor_work_areas
 from .winput import DryRunMouse, Win32Mouse
 
 log = logging.getLogger("r2clicker")
 PREVIEW_W = 800
+PICK_RADIUS = 7  # canvas px: clicking this close to a manual point selects it instead of adding one
 
 # (field, label, kind) - kind: str|int|float|bool|tuple|rects|choice:<a>|<b>
 FORM = [
@@ -133,7 +136,9 @@ class App:
         self._load_initial_frame()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.place_window()
-        if show:
+        # Automated smoke tests can set this flag to keep every helper window
+        # withdrawn while still exercising the full Tk layout and callbacks.
+        if show and os.environ.get("R2_HIDE_TEST_WINDOWS") != "1":
             self.bring_to_front()
         self._sync_capture_exclusion()
         self.root.after(100, self._poll)
@@ -150,9 +155,10 @@ class App:
         ttk.Button(bar, text="Capture game screen", command=self.capture_preview).pack(side="left")
         ttk.Button(bar, text="Load screenshot...", command=self.load_image).pack(side="left", padx=4)
         ttk.Button(bar, text="Test check on image", command=self.test_verify).pack(side="left")
+        ttk.Button(bar, text="Preflight check", command=self.preflight_check).pack(side="left", padx=4)
         ttk.Label(bar, text="  Drag sets:").pack(side="left")
         self.drag_mode = tk.StringVar(value="roi")
-        for v, t in (("roi", "ROI"), ("player", "player"), ("park", "park point")):
+        for v, t in (("roi", "ROI"), ("player", "player"), ("park", "park point"), ("manual", "mob points")):
             ttk.Radiobutton(bar, text=t, value=v, variable=self.drag_mode).pack(side="left")
 
         self.canvas = tk.Canvas(left, width=PREVIEW_W, height=PREVIEW_W * 9 // 16, bg="#222", highlightthickness=0)
@@ -162,6 +168,23 @@ class App:
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.status = ttk.Label(left, text="", foreground="#555")
         self.status.pack(fill="x")
+
+        # manual candidates: picked on the preview in "mob points" mode, tried in list order
+        mf = ttk.Frame(left)
+        mf.pack(fill="x", pady=(4, 0))
+        self.manual_list = tk.Listbox(mf, height=4, width=40, exportselection=False, activestyle="none",
+                                      font=("Consolas", 9))
+        self.manual_list.pack(side="left")
+        self.manual_list.bind("<<ListboxSelect>>", lambda e: self.redraw())
+        mb = ttk.Frame(mf)
+        mb.pack(side="left", padx=4)
+        for i, (text, cmd) in enumerate((("Up", lambda: self.move_manual_point(-1)),
+                                         ("Down", lambda: self.move_manual_point(1)),
+                                         ("Delete", self.delete_manual_point),
+                                         ("Clear all", self.clear_manual_points))):
+            ttk.Button(mb, text=text, width=9, command=cmd).grid(row=i // 2, column=i % 2)
+        self.manual_info = ttk.Label(mf, text="", foreground="#555", wraplength=330, justify="left")
+        self.manual_info.pack(side="left", fill="x", expand=True)
 
         ctl = ttk.Frame(left)
         ctl.pack(fill="x", pady=4)
@@ -332,6 +355,7 @@ class App:
     # ---------- settings ----------
     def read_form(self) -> Settings | None:
         s = Settings.from_dict({f.name: getattr(self.settings, f.name) for f in fields(Settings)})
+        s.extra = dict(self.settings.extra)  # keys of a newer release survive a save
         try:
             for name, (var, kind) in self.vars.items():
                 v = var.get()
@@ -342,7 +366,8 @@ class App:
             messagebox.showerror("Invalid setting", str(e))
             return None
         s.dry_run = bool(self.dry_var.get())
-        problems = s.validate()
+        # unsafe manual points do not block editing (they are drawn red); start() refuses them
+        problems = s.validate(include_manual=False)
         if problems:
             messagebox.showerror("Invalid settings", "\n".join(problems))
             return None
@@ -386,7 +411,9 @@ class App:
         if s:
             try:
                 s.save(self.settings_file)
-                log.info("settings saved to %s", self.settings_file)
+                log.info("settings saved to %s (%d manual points)", self.settings_file, len(s.manual_points))
+                for p in s.manual_point_problems():
+                    log.warning("saved, but a run is refused until fixed: %s", p)
             except OSError as e:
                 messagebox.showerror("Save failed", f"Could not write {self.settings_file}:\n{e}")
 
@@ -471,14 +498,18 @@ class App:
         c.create_oval((px - rr) * k, (py - rr) * k, (px + rr) * k, (py + rr) * k, outline="#ff4040", width=2)
         x1, y1, x2, y2 = s.roi
         c.create_rectangle(x1 * k, y1 * k, x2 * k, y2 * k, outline="#40ff40", width=2)
-        cands = build_candidates(s, self.frame, self.frame_mapping) if self.frame is not None else build_candidates(s)
         n = s.max_attempts
-        for i, cd in enumerate(cands):
-            col = "#ffff00" if i < n else "#808080"
-            cx, cy = cd.x * k, cd.y * k
-            c.create_oval(cx - 2, cy - 2, cx + 2, cy + 2, fill=col, outline="")
-            if i < min(n, 40):
-                c.create_text(cx + 3, cy - 6, text=str(i + 1), fill=col, font=("Segoe UI", 7), anchor="w")
+        if s.manual_points:
+            footer = self._draw_manual_points()
+        else:
+            cands = build_candidates(s, self.frame, self.frame_mapping) if self.frame is not None else build_candidates(s)
+            for i, cd in enumerate(cands):
+                col = "#ffff00" if i < n else "#808080"
+                cx, cy = cd.x * k, cd.y * k
+                c.create_oval(cx - 2, cy - 2, cx + 2, cy + 2, fill=col, outline="")
+                if i < min(n, 40):
+                    c.create_text(cx + 3, cy - 6, text=str(i + 1), fill=col, font=("Segoe UI", 7), anchor="w")
+            footer = f"{len(cands)} candidates, first {min(n, len(cands))} used per cycle (yellow). "
         qx, qy = s.park_point
         c.create_line(qx * k - 6, qy * k - 6, qx * k + 6, qy * k + 6, fill="#40a0ff", width=2)
         c.create_line(qx * k - 6, qy * k + 6, qx * k + 6, qy * k - 6, fill="#40a0ff", width=2)
@@ -486,8 +517,118 @@ class App:
             bx1, by1, bx2, by2 = self.verify_box
             c.create_rectangle(bx1 * k, by1 * k, bx2 * k, by2 * k, outline="#00ffff", width=2)
         c.create_text(6, c.winfo_reqheight() - 8, anchor="sw", fill="#fff", font=("Segoe UI", 8),
-                      text=f"{len(cands)} candidates, first {min(n, len(cands))} used per cycle (yellow). "
-                           "Green=ROI, red=avoid, blue X=park, orange=ignored by check")
+                      text=footer + "Green=ROI, red=avoid, blue X=park, orange=ignored by check")
+        self._refresh_manual_list()
+
+    def _draw_manual_points(self) -> str:
+        """Numbered manual points: cyan = used, grey = beyond max_attempts, red X = refused."""
+        c, s, k = self.canvas, self.settings, self._k()
+        sel = self._manual_selected()
+        used = bad = 0
+        for i, p in enumerate(s.manual_points):
+            cx, cy = p[0] * k, p[1] * k
+            if manual_point_reason(p, s):
+                bad += 1
+                col = "#ff3030"
+                c.create_line(cx - 5, cy - 5, cx + 5, cy + 5, fill=col, width=2, tags="manual")
+                c.create_line(cx - 5, cy + 5, cx + 5, cy - 5, fill=col, width=2, tags="manual")
+            else:
+                col = "#00e5ff" if used < s.max_attempts else "#808080"
+                used += 1
+                c.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, outline=col, width=2, tags="manual")
+            if i == sel:
+                c.create_oval(cx - 8, cy - 8, cx + 8, cy + 8, outline="#ffffff", tags="manual")
+            c.create_text(cx + 7, cy - 8, text=str(i + 1), fill=col, font=("Segoe UI", 8, "bold"),
+                          anchor="w", tags=("manual", "manual_label"))
+        refused = f", {bad} REFUSED (red X: outside ROI or in an avoid area)" if bad else ""
+        return (f"{len(s.manual_points)} manual points{refused}; first {min(s.max_attempts, used)} valid used "
+                "per cycle in list order, auto grid off. ")
+
+    # ---------- manual candidates ----------
+    def _manual_selected(self) -> int | None:
+        sel = self.manual_list.curselection()
+        return sel[0] if sel else None
+
+    def _refresh_manual_list(self):
+        s, lb = self.settings, self.manual_list
+        keep = self._manual_selected()
+        lb.delete(0, "end")
+        for i, p in enumerate(s.manual_points):
+            why = manual_point_reason(p, s)
+            lb.insert("end", f"{i + 1:>3}. ({p[0]}, {p[1]})" + (f"  REFUSED: {why}" if why else ""))
+            if why:
+                lb.itemconfig("end", foreground="#c00000")
+        if keep is not None and keep < lb.size():
+            lb.selection_set(keep)
+            lb.see(keep)
+        if not s.manual_points and not self.manual_info.cget("text"):
+            self.manual_info.config(text="No manual points: the automatic grid is used. Choose 'mob points' "
+                                         "above and click the preview to add points in click order.")
+
+    def _set_manual_points(self, pts, select: int | None = None):
+        # a new Settings object: a running Bot keeps the settings it was started with
+        self.settings = replace(self.settings, manual_points=[tuple(p) for p in pts])
+        self.manual_list.selection_clear(0, "end")
+        if select is not None and 0 <= select < len(pts):
+            self._refresh_manual_list()
+            self.manual_list.selection_set(select)
+            self.manual_list.see(select)
+        self.redraw()
+
+    def _manual_message(self, text: str, warn: bool = False):
+        self.manual_info.config(text=text, foreground="#c00000" if warn else "#555")
+        (log.warning if warn else log.info)("manual points: %s", text)
+
+    def add_manual_point(self, x: int, y: int) -> bool:
+        """Append a reference point. Refused (nothing added) wherever a run would refuse it."""
+        s = self.settings
+        why = manual_point_reason((x, y), s)
+        if why:
+            self._manual_message(f"point ({x}, {y}) not added: {why}", warn=True)
+            return False
+        if len(s.manual_points) >= MAX_MANUAL_POINTS:
+            self._manual_message(f"point not added: at most {MAX_MANUAL_POINTS} manual points", warn=True)
+            return False
+        self._set_manual_points(list(s.manual_points) + [(x, y)], select=len(s.manual_points))
+        self._manual_message(f"point {len(self.settings.manual_points)} added at ({x}, {y}); "
+                             "Save settings to keep it")
+        return True
+
+    def delete_manual_point(self):
+        i = self._manual_selected()
+        if i is None:
+            self._manual_message("select a point in the list (or click it on the preview) to delete it")
+            return
+        pts = list(self.settings.manual_points)
+        x, y = pts.pop(i)
+        self._set_manual_points(pts, select=min(i, len(pts) - 1))
+        self._manual_message(f"point {i + 1} ({x}, {y}) deleted")
+
+    def clear_manual_points(self):
+        n = len(self.settings.manual_points)
+        if not n or not messagebox.askyesno(
+                "Clear manual points",
+                f"Delete all {n} manual points?\n\nThe automatic grid is used again when the list is empty."):
+            return
+        self._set_manual_points([])
+        self._manual_message(f"all {n} manual points deleted; the automatic grid is used")
+
+    def move_manual_point(self, delta: int):
+        i = self._manual_selected()
+        pts = list(self.settings.manual_points)
+        if i is None or not 0 <= i + delta < len(pts):
+            return
+        j = i + delta
+        pts[i], pts[j] = pts[j], pts[i]
+        self._set_manual_points(pts, select=j)
+        self._manual_message(f"point moved to position {j + 1}")
+
+    def _manual_point_near(self, ex, ey) -> int | None:
+        """Index of the manual point within PICK_RADIUS canvas px of (ex, ey), nearest first."""
+        k = self._k()
+        near = [(math.hypot(x * k - ex, y * k - ey), i) for i, (x, y) in enumerate(self.settings.manual_points)]
+        near = [d for d in near if d[0] <= PICK_RADIUS]
+        return min(near)[1] if near else None
 
     def _on_press(self, e):
         self.drag_start = (e.x, e.y)
@@ -502,6 +643,18 @@ class App:
         k = self._k()
         ref = lambda x, y: (round(x / k), round(y / k))
         mode = self.drag_mode.get()
+        if mode == "manual":
+            self.drag_start = None
+            if not self._commit_form():  # check the point against the ROI/avoid areas as typed
+                return
+            hit = self._manual_point_near(e.x, e.y)
+            if hit is not None:  # clicking an existing point selects it (for Delete/Up/Down)
+                self.manual_list.selection_clear(0, "end")
+                self.manual_list.selection_set(hit)
+                self.redraw()
+            else:
+                self.add_manual_point(*ref(e.x, e.y))
+            return
         if mode == "roi" and self.drag_start:
             (ax, ay), (bx, by) = ref(*self.drag_start), ref(e.x, e.y)
             if abs(bx - ax) > 20 and abs(by - ay) > 20:
@@ -514,25 +667,71 @@ class App:
         self.apply()
 
     # ---------- run ----------
+    def _preflight(self, s: Settings):
+        """Run the preflight checks for s and write every item to the log. Never clicks."""
+        self.grabber.backend = s.capture_backend
+        report = run_preflight(s, self.grabber.grab, live=not s.dry_run, resolve=resolve_mapping)
+        for item in report.items:
+            (log.error if item.status == "FAIL" else log.warning if item.status == "warn" else log.info)(
+                "preflight %s", item.line())
+        log.info("preflight %s", "passed" if report.ok else "FAILED: the run is not started")
+        return report
+
+    def preflight_check(self):
+        s = self._commit_form()
+        if not s:
+            return
+        report = self._preflight(s)  # its settings check includes the manual points
+        lines = [i.line() for i in report.items]
+        if report.ok:
+            messagebox.showinfo("Preflight passed", "\n\n".join(lines))
+        else:
+            messagebox.showerror("Preflight failed", "Start is refused until these are fixed:\n\n" + "\n\n".join(lines))
+
     def start(self):
         if self.thread and self.thread.is_alive():
             return
         s = self._commit_form()
         if not s:
             return
+        problems = s.manual_point_problems()
+        if problems:
+            messagebox.showerror("Manual points refused", "Delete or move these manual points (red X on the "
+                                 "preview) before starting:\n\n" + "\n".join(problems))
+            return
+        report = self._preflight(s)
+        if not report.ok:
+            messagebox.showerror("Preflight failed - not started",
+                                 "Nothing was clicked. Fix these first:\n\n"
+                                 + "\n\n".join(f"{i.name}: {i.message}" for i in report.failures))
+            return
         if not s.dry_run:
+            warn = "".join(f"\n- {i.name}: {i.message}" for i in report.warnings if i.name != "mode")
             ok = messagebox.askyesno(
                 "Live mode",
                 f"Dry run is OFF: the tool will really click inside '{s.window_title or 'the screen'}'.\n\n"
-                f"Emergency stop: hold {s.emergency_hotkey}, or move the cursor into the top-left corner.\n\nContinue?",
+                + (f"Preflight warnings:{warn}\n\n" if warn else "")
+                + f"Emergency stop: hold {s.emergency_hotkey}, or move the cursor into the top-left corner.\n\nContinue?",
             )
             if not ok:
                 return
-            mouse = Win32Mouse()
+            # Constructing the Win32 backend can fail before the worker thread
+            # exists (for example when a source checkout is run on a non-Windows
+            # host, or when the Win32 API is unavailable).  Treat that as a
+            # refused start and leave the GUI usable instead of letting a Tk
+            # callback traceback escape with no visible explanation.
+            try:
+                mouse = Win32Mouse()
+            except Exception as e:
+                log.exception("could not initialise live mouse input")
+                messagebox.showerror("Live mode unavailable", str(e))
+                return
         else:
             mouse = DryRunMouse()
         self.grabber.backend = s.capture_backend
         log.info("wait after right click -> next cycle: %.3f s", s.wait_interval)
+        if s.manual_points:
+            log.info("using %d manual points in list order (automatic grid off)", len(s.manual_points))
         self.bot = Bot(s, self.grabber.grab, mouse)
         self.thread = threading.Thread(target=self.bot.run, daemon=True)
         self.thread.start()

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -15,6 +17,8 @@ REF_W, REF_H = 1600, 900
 SETTINGS_VERSION = 2  # 2: hide_helper_from_capture is an explicit opt-in (default off)
 
 Rect = tuple[int, int, int, int]  # x1, y1, x2, y2 (x2/y2 exclusive)
+Point = tuple[int, int]
+MAX_MANUAL_POINTS = 200
 
 # HUD regions of the reference screenshot that must never be clicked.
 DEFAULT_UI_RECTS: list[Rect] = [
@@ -47,6 +51,8 @@ class Settings:
     prefer_mob_pixels: bool = True    # rank candidates by local colour/texture score
     mob_score_min: float = 0.0        # candidates scoring below this are dropped (0 = keep all)
     sticky_radius: int = 120          # try points near the last success first (0 = off)
+    manual_points: list[Point] = field(default_factory=list)  # user-picked click points, tried in
+                                      # this order; when non-empty they replace the automatic grid
 
     # --- timing (seconds) ---
     wait_interval: float = 5.0        # seconds from the end of a cycle (its right click, or its last
@@ -105,6 +111,8 @@ class Settings:
     settings_version: int = SETTINGS_VERSION
     load_warnings: list[str] = field(default_factory=list, repr=False, compare=False)
     load_notes: list[str] = field(default_factory=list, repr=False, compare=False)  # migrations
+    # keys this version does not know (written by a newer release): kept on save, never dropped
+    extra: dict = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
     def load(cls, path: str | Path) -> "Settings":
@@ -122,6 +130,12 @@ class Settings:
         except (OSError, ValueError) as e:
             s = cls()
             s.load_warnings.append(f"{p.name} could not be read ({e}); using defaults")
+            # keep the unreadable file: a later "Save settings" overwrites it with the form values
+            try:
+                backup = _backup_unreadable(p)
+                s.load_warnings.append(f"a copy of the unreadable file is kept as {backup.name}")
+            except OSError:
+                pass
             return s
         return cls.from_dict(data)
 
@@ -129,8 +143,10 @@ class Settings:
     def from_dict(cls, data: dict) -> "Settings":
         """Settings from a dict. Values of the wrong type keep the default and add a warning."""
         s = cls()
+        known = {f.name for f in fields(cls)}
+        s.extra = {k: v for k, v in data.items() if k not in known}
         for f in fields(cls):
-            if f.name not in data or f.name in ("load_warnings", "load_notes"):
+            if f.name not in data or f.name in _INTERNAL:
                 continue
             default = getattr(s, f.name)
             try:
@@ -154,14 +170,19 @@ class Settings:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         d = asdict(self)
-        d.pop("load_warnings", None)
-        d.pop("load_notes", None)
+        for k in _INTERNAL:
+            d.pop(k, None)
+        d = {**{k: v for k, v in self.extra.items() if k not in d}, **d}
         tmp = p.with_suffix(p.suffix + ".tmp")
         tmp.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, p)
 
-    def validate(self) -> list[str]:
-        """Human-readable problems that must be fixed before a run. Empty list = OK."""
+    def validate(self, include_manual: bool = True) -> list[str]:
+        """Human-readable problems that must be fixed before a run. Empty list = OK.
+
+        include_manual=False leaves out manual_point_problems(): the GUI uses that so changing
+        the ROI is still possible while it marks the manual points the change made unsafe.
+        """
         from .candidates import ORDERS
         from .winput import VK_CODES
 
@@ -223,13 +244,50 @@ class Settings:
             e.append("live mode needs an emergency hotkey or the corner failsafe")
         if self.template_path and not Path(self.template_path).is_file():
             e.append(f"template file not found: {self.template_path}")
+        if include_manual:
+            e.extend(self.manual_point_problems())
         return e
+
+    def manual_point_problems(self) -> list[str]:
+        """Manual points that would be refused at run time (outside the ROI, player or HUD)."""
+        from .candidates import manual_point_reason
+
+        e: list[str] = []
+        if len(self.manual_points) > MAX_MANUAL_POINTS:
+            e.append(f"at most {MAX_MANUAL_POINTS} manual points (got {len(self.manual_points)})")
+        if len(self.roi) != 4:
+            return e
+        for i, p in enumerate(self.manual_points, 1):
+            why = manual_point_reason(p, self)
+            if why:
+                e.append(f"manual point {i} {tuple(p)}: {why}")
+        return e
+
+
+_INTERNAL = ("load_warnings", "load_notes", "extra")
+
+
+def _backup_unreadable(p: Path) -> Path:
+    """Copy p to <name>.unreadable (timestamped if a different copy is already there). Loading the
+    same broken file again (the GUI reloads it on close) does not create more copies."""
+    data = p.read_bytes()
+    backup = p.with_name(p.name + ".unreadable")
+    if backup.exists() and backup.read_bytes() != data:
+        backup = p.with_name(f"{p.name}.unreadable-{time.strftime('%Y%m%d-%H%M%S')}")
+    if not backup.exists():
+        shutil.copy2(p, backup)
+    return backup
 
 
 def _coerce(v, default, name):
     """Convert a JSON value to the type of the default (tuples, rect lists, bool, int, float, str)."""
     if name in ("ui_rects", "verify_ignore_rects"):
         return [tuple(int(x) for x in r) for r in v]
+    if name == "manual_points":
+        pts = [tuple(int(x) for x in p) for p in v]
+        if any(len(p) != 2 for p in pts):
+            raise ValueError(name)
+        return pts
     if isinstance(default, bool):
         if not isinstance(v, bool):
             raise TypeError(name)

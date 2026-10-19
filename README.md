@@ -16,6 +16,35 @@ only after you untick *DRY RUN* and confirm a dialog.
 3. Read `README.txt` in the zip for a quick start.
 
 The exe is not code-signed, so SmartScreen may warn ("More info" → "Run anyway").
+No Python or other install is needed: everything the exe loads is in its folder.
+
+### First run: minimal steps
+
+1. Unzip the whole folder somewhere writable (Desktop, `D:\Tools`), not under
+   `Program Files`. Start `R2TargetHelper.exe`. **DRY RUN** is ticked: nothing is clicked.
+2. Start the game in a window (not minimized) at a 16:9 resolution, e.g. 1600x900 or
+   1920x1080.
+3. In the tool, set **Game window title contains** to a distinctive part of the game's title.
+4. Click **Capture game screen**. If it fails, the message says why (window not found,
+   covered, blank capture).
+5. Drag the green **ROI** over the mob area. Optionally switch to **mob points** and click the
+   mobs in the order to try them (otherwise the automatic grid is used).
+6. Click **Save settings**, then **Preflight check**. Every line must be `ok`, `info` or
+   `warn`; a `FAIL` line says what to fix, and Start is refused until it is fixed.
+7. Click **Start** with DRY RUN still ticked. Read the log: the points it *would* click.
+8. Only then untick DRY RUN and Start. The confirmation lists any preflight warnings.
+   Stop: **F12**, the cursor in the top-left screen corner, or **Stop**.
+
+If the game runs as administrator, close the tool and start it with *Run as administrator*;
+preflight reports this as `admin rights: FAIL` in live mode.
+
+Updating: unzip the new version **over the old folder**. The zip never contains
+`settings.json`, so your settings stay. If you unzip to a new folder instead, copy the old
+`settings.json` into it.
+
+Support: `R2TargetHelper.exe --preflight report.json` writes the same checks for the saved
+settings to a file, without the GUI and without clicking. `--selftest out.json` checks the
+installation offline.
 
 ## Run from source
 
@@ -47,9 +76,23 @@ problem and does nothing, and the previous valid settings stay in effect.
    - **park point**: the blue X, where the cursor rests after every click so hover highlights
      are not mistaken for a selection. It must be outside the ROI.
 
+   - **mob points**: each click on the preview adds a numbered manual candidate (see below).
+
    Yellow numbered dots show the click order. Only the first *Max left clicks per cycle* dots
    are used each cycle. Red areas are HUD regions that are never clicked. Orange areas are
    ignored by the nameplate check.
+
+   **Manual mob points.** In *mob points* mode every click adds a point, numbered in click
+   order (cyan circles; the list under the preview shows them). Clicking an existing point
+   selects it; **Up**/**Down** reorder it, **Delete** removes it, **Clear all** empties the list.
+   Points are stored as reference coordinates in `manual_points` (Save settings keeps them).
+   While the list has at least one point, a run tries *only* these points, in list order (no
+   pixel ranking, no "near last hit first"), capped by *Max left clicks per cycle*. With an
+   empty list the automatic grid is used as before. Points outside the ROI, inside the player
+   circle or on a HUD rectangle are not added. If a later ROI/avoid change makes a saved point
+   unsafe, it is drawn as a red X, marked REFUSED in the list, and Start is refused until it is
+   deleted or the settings are changed back. The usual mapping, focus, covered-point,
+   dry-run and stop checks apply to manual points exactly as to grid points.
 4. Set the timing (all in seconds):
 
    | GUI label | Setting | Meaning |
@@ -147,7 +190,9 @@ crash would look like "the process runs but no window".
 | Situation | Behaviour |
 |---|---|
 | Invalid settings (GUI or hand-edited `settings.json`) | Start is refused, and every problem is listed. |
-| Corrupt or unreadable `settings.json`, or wrong value types | Defaults are used for those values, and a warning is logged. Saving is atomic (temp file + rename). |
+| Any preflight `FAIL` (window, DPI, client size, capture, candidates, admin rights in live mode) | Start is refused before any mouse input is created; the dialog and log say what to fix. |
+| Corrupt or unreadable `settings.json`, or wrong value types | Defaults are used for those values, and a warning is logged. An unreadable file is first copied to `settings.json.unreadable`. Saving is atomic (temp file + rename). Keys written by a newer release are kept on save. |
+| Captured frame is blank (black/one colour) | Preflight fails; during a run the run stops before clicking. |
 | Game window not found, minimized, or zero-size | The run stops with that message; nothing is clicked. |
 | Game window not in the foreground (live mode) | The run pauses without clicking and resumes when the game is active again. Focus lost mid-cycle ends that cycle at once. |
 | Screenshot fails, or its size does not match the client (DPI scaling, window resized) | The run stops with a message that mentions DPI. The process is DPI-aware. |
@@ -182,11 +227,16 @@ the GUI shows where it is. The release zip ships `settings.example.json` but nev
   runtime they are scaled to the game's actual client size and offset by the window position
   (`geometry.py`).
 - **Candidates** (`candidates.py`):
+  - Manual points, when there are any, replace everything below and keep their order.
   - A staggered grid over the ROI.
   - Points inside the player circle or the HUD rectangles are removed.
   - Remaining points are ordered by `center_out`, `raster`, `snake` or `spiral`.
   - Bright, textured patches (likely a mob) are tried before flat floor.
   - Points near the last successful click are tried first.
+- **Preflight** (`preflight.py`), before every Start and on **Preflight check**: settings and
+  manual points, game window, DPI awareness and monitor scaling, client size/aspect, one
+  capture (size, not blank), candidates inside the client, administrator rights of the game
+  vs. this tool, DRY RUN/LIVE. Any `FAIL` refuses the run.
 - **One cycle** (`engine.py`):
   1. Park the cursor and take a baseline screenshot.
   2. For each candidate: left-click, park, check.
@@ -215,8 +265,14 @@ a hover label without markers, and its nameplate drifts. The tests cover:
   after errors, the dry-run guard
 - settings validation, load and save
 - data paths for source, portable and read-only installs
-- a headless GUI smoke test (form → settings, save, ROI drag), including that every button
-  uses the values as typed without Enter/Apply
+- a headless GUI smoke test (form → settings, save, ROI drag, manual mob points: add,
+  refuse, select, reorder, delete, clear, save/load, Start), including that every button
+  uses the values as typed without Enter/Apply. Its windows stay withdrawn
+  (`R2_HIDE_TEST_WINDOWS=1`); the two tests that check a visible window are desktop tests
+- manual points: settings round trip, validation, order, mapping, covered points, focus loss
+- preflight: every check with faked window/capture/Win32 probes, the GUI gate (no live input
+  or prompt before it passes), `--preflight`, blank frames, unknown keys and unreadable
+  settings files
 - capture backend selection and occlusion logic (stubbed Win32 calls)
 - desktop capture tests with real windows. A patterned "game" window runs in a separate
   process, with an external topmost window and the helper GUI over it. The tests check that:
@@ -224,7 +280,9 @@ a hover label without markers, and its nameplate drifts. The tests cover:
   - `screen` capture refuses while an external window covers the target
   - the click guard sees covering windows
 
-  These briefly show small windows; set `R2_SKIP_DESKTOP_TESTS=1` to skip them.
+  These briefly show small windows; set `R2_SKIP_DESKTOP_TESTS=1` to skip them, the two
+  visible-window GUI tests, and the self-test's PrintWindow step (`R2_SELFTEST_NO_WINDOW=1`,
+  also used by `build.ps1` when that variable is set).
 - source hygiene: UTF-8 with no U+FFFD, and ASCII-only GUI strings
 
 None of the tests touch the game or the real mouse.
@@ -273,7 +331,9 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
 - A nameplate inside the orange ignore box over the player is not detected (a deliberate
   trade-off against skill-flash false positives).
 - Whether the game accepts `SendInput` clicks, or blocks automation, is untested; there was
-  no live testing. Check that the game's terms allow this kind of tool.
+  no live testing. Check that the game's terms allow this kind of tool. Preflight can only
+  detect the administrator-rights case; an anti-cheat that silently drops input is not
+  detectable before a run.
 - Whether `PrintWindow` can read the R2 client is unknown until it is tried on the real game.
   If the preview reports `[screen capture]`, the game is hardware-rendered. Then keep the
   game uncovered, including by the helper, or the capture fails safely.

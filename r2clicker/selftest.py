@@ -4,14 +4,19 @@ It never touches the game or the real mouse. It checks:
 - bundled sample image and Tk are present; PrintWindow capture and capture exclusion work
 - candidates are generated
 - the nameplate check finds a synthetic nameplate and nothing in the real screenshot
-- a dry-run cycle against a simulated screen
-- settings can be saved and loaded in the data folder
+- a dry-run cycle against a simulated screen, also with manual points
+- the preflight refuses a blank frame and an unsafe manual point (simulated game window)
+- settings can be saved and loaded in the data folder, and the self-test never creates or
+  changes the user's settings.json
 
 Results go to a JSON file because a windowed exe has no console. Exit code 0 = all passed.
+R2_SELFTEST_NO_WINDOW=1 skips the one step that shows a small window (PrintWindow needs a
+mapped window); Tk itself is still started, hidden.
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -57,6 +62,11 @@ def run_checks() -> dict:
         from .capture import Grabber, print_window
 
         r = tkinter.Tk()
+        if os.environ.get("R2_SELFTEST_NO_WINDOW") == "1":
+            r.withdraw()  # before the first update: the window is never mapped
+            r.update()
+            r.destroy()
+            return "Tk ok; window capture skipped (R2_SELFTEST_NO_WINDOW=1)"
         try:
             r.title("R2 selftest")
             r.geometry("120x80+40+40")
@@ -107,6 +117,42 @@ def run_checks() -> dict:
         assert len(lefts) == 3, mouse.actions
         return bot.stop_reason
 
+    def manual_cycle():
+        mouse = DryRunMouse()
+        pts = [(600, 300), (1000, 250)]
+        s = Settings(settle_delay=0, verify_delay=0, verify_timeout=0, max_cycles=1, emergency_hotkey="",
+                     corner_failsafe=False, manual_points=pts)
+        frame = np.asarray(state["img"])
+        Bot(s, lambda _m: frame, mouse, mapping_fn=lambda: (m, "selftest")).run()
+        lefts = [a[1:] for a in mouse.actions if a[0] == "left"]
+        assert lefts == pts, lefts
+        return f"{len(lefts)} manual points recorded in order (dry run, no clicks)"
+
+    def preflight():
+        from .preflight import run_preflight
+
+        frame = np.asarray(state["img"])
+        fake = dict(resolve=lambda t, w, h: (m, "selftest window"), dpi_awareness=lambda: 2,
+                    me_elevated=lambda: False, game_elevated=lambda h: False)
+        good = run_preflight(Settings(), lambda _m: frame, live=False, **fake)
+        assert good.ok, good.text()
+        blank = run_preflight(Settings(), lambda _m: np.zeros_like(frame), live=True, **fake)
+        assert not blank.ok and blank.failures[0].name == "capture", blank.text()
+        unsafe = run_preflight(Settings(manual_points=[(800, 440)]), lambda _m: frame, live=False, **fake)
+        assert not unsafe.ok and unsafe.failures[0].name == "settings", unsafe.text()
+        return f"{len(good.items)} checks"
+
+    def dpi_awareness():
+        """The real process: coordinates must be physical pixels, as the GUI sets up at start."""
+        from .geometry import enable_dpi_awareness
+        from .preflight import process_dpi_awareness
+
+        enable_dpi_awareness()
+        aw = process_dpi_awareness()
+        if sys.platform == "win32":
+            assert aw in (1, 2), f"DPI awareness is {aw} after enable_dpi_awareness()"
+        return f"awareness {aw}"
+
     def settings_io():
         p = settings_path().with_name("settings.selftest.json")
         s = Settings(wait_interval=2.5)
@@ -115,9 +161,14 @@ def run_checks() -> dict:
         p.unlink()
         return str(data_dir())
 
+    user_settings = settings_path()
+    before = user_settings.read_bytes() if user_settings.exists() else None
     for name, fn in [("sample", sample), ("tk_and_window_capture", tk_and_window_capture), ("candidates", cands),
-                     ("detect", detect), ("dry_cycle", dry_cycle), ("settings_io", settings_io)]:
+                     ("detect", detect), ("dry_cycle", dry_cycle), ("manual_cycle", manual_cycle),
+                     ("preflight", preflight), ("dpi_awareness", dpi_awareness), ("settings_io", settings_io)]:
         check(name, fn)
+    after = user_settings.read_bytes() if user_settings.exists() else None
+    checks["settings_untouched"] = "ok" if after == before else f"FAIL: {user_settings} was created or changed"
     return {"version": __version__, "frozen": is_frozen(), "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "checks": checks, "passed": all(v.startswith("ok") for v in checks.values())}
 

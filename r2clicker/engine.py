@@ -20,7 +20,7 @@ from typing import Callable
 import numpy as np
 
 from .candidates import Candidate, build_candidates
-from .capture import CaptureError, point_belongs_to
+from .capture import CaptureError, is_blank, point_belongs_to
 from .config import Settings
 from .geometry import Mapping, WindowNotFound, is_foreground, monitor_top_left, resolve_mapping
 from .vision import VerifyResult, load_template, verify
@@ -152,9 +152,15 @@ class Bot:
         if not self._sleep(s.settle_delay):
             return CycleResult(False, 0)
         baseline = self.grab(m)
+        if is_blank(baseline):  # a black/one-colour frame: clicking would be blind, so stop the run
+            raise CaptureError("the captured game frame is blank; nothing was clicked. Bring the game "
+                               "to the front or change the capture backend")
         tmpl = self._template(m)
         cands = build_candidates(s, baseline, m, self.last_success)[: max(0, s.max_attempts)]
-        log.info("cycle: %d candidates (order=%s, step=%d)", len(cands), s.order, s.grid_step)
+        if s.manual_points:
+            log.info("cycle: %d manual candidates (in the order picked)", len(cands))
+        else:
+            log.info("cycle: %d candidates (order=%s, step=%d)", len(cands), s.order, s.grid_step)
         tried: list[tuple[int, int]] = []
         res: VerifyResult | None = None
 

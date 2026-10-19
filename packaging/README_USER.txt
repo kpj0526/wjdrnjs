@@ -4,12 +4,19 @@ R2 Target Helper - quick start
 1. Unzip the whole folder anywhere you can write to (e.g. Desktop or D:\Tools).
    Keep R2TargetHelper.exe next to its _internal folder.
 2. Start R2TargetHelper.exe. It opens in DRY RUN mode: it only logs what it would click.
-3. Start the game, then in the tool:
+   Nothing else needs to be installed.
+3. Start the game in a window (not minimized), 16:9 resolution (e.g. 1600x900), then in the tool:
    - "Game window title contains": part of the game window title (default R2).
    - "Capture game screen", then drag the green ROI over the mob cluster.
+   - Optional: choose "mob points" and click the mobs in the order to try them.
    - "Wait after right click -> next cycle (s)": the pause between cycles.
    - "Save settings".
-4. Press Start in dry run and read the log. Untick DRY RUN only when ready.
+4. Press "Preflight check". Fix every FAIL line (Start is refused while any is left).
+5. Press Start in dry run and read the log. Untick DRY RUN only when ready.
+
+Updating: unzip the new version over the old folder. The zip has no settings.json,
+so your settings are kept. In a new folder, copy the old settings.json into it.
+For support: R2TargetHelper.exe --preflight report.json  (checks only, never clicks).
 
 Emergency stop: hold F12, or push the mouse into the top-left corner of the monitor,
 or press Stop. Clicks are only sent while the game window is the active window.

@@ -1,5 +1,8 @@
 """Candidate click points inside the ROI: grid, exclusions, ordering, optional pixel scoring.
 
+Manual points (Settings.manual_points) replace the grid when there are any: they are used
+as picked, in order, with the same ROI/player/HUD exclusions and no re-ranking.
+
 Everything here works in reference coordinates. Pixel scoring takes a client
 image plus a Mapping so it also works when the client is not 1600x900.
 """
@@ -52,6 +55,24 @@ def exclusion_reason(p: tuple[int, int], s: Settings) -> str | None:
     for (x1, y1, x2, y2) in s.ui_rects:
         if x1 <= x < x2 and y1 <= y < y2:
             return "ui"
+    return None
+
+
+def manual_point_reason(p, s: Settings) -> str | None:
+    """Why a manual point must not be clicked, or None if it is safe (same rules as the grid)."""
+    if len(p) != 2:
+        return "needs x,y"
+    x, y = p
+    if not (0 <= x < s.ref_w and 0 <= y < s.ref_h):
+        return f"outside the {s.ref_w}x{s.ref_h} game client"
+    x1, y1, x2, y2 = s.roi
+    if not (x1 <= x < x2 and y1 <= y < y2):
+        return "outside the ROI"
+    why = exclusion_reason((x, y), s)
+    if why == "player":
+        return "inside the player avoid radius"
+    if why == "ui":
+        return "inside a UI rect to avoid"
     return None
 
 
@@ -109,6 +130,10 @@ def build_candidates(
     last_success: tuple[int, int] | None = None,
 ) -> list[Candidate]:
     """Ordered candidate list for one cycle (reference coordinates)."""
+    if s.manual_points:
+        # the user's order is the order: no pixel scoring, no sticky re-ranking. Unsafe points
+        # are dropped here too, although validate() already refuses a run that has any.
+        return [Candidate(int(x), int(y)) for (x, y) in s.manual_points if manual_point_reason((x, y), s) is None]
     rows = grid_points(s.roi, s.grid_step, s.stagger)
     rows = [[p for p in row if exclusion_reason(p, s) is None] for row in rows]
     rows = [row for row in rows if row]

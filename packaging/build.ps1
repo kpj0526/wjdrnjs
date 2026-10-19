@@ -86,6 +86,13 @@ Invoke-Checked "write settings.example.json" {
     & $VPy -c "from r2clicker.config import Settings; Settings().save(r'dist\$Name\settings.example.json')"
 }
 
+# --- the customer PC has no Python: everything the exe loads must be in the folder ----------
+$need = @("$Name.exe", "_internal\python3*.dll", "_internal\VCRUNTIME140.dll", "_internal\_tkinter.pyd",
+          "_internal\tcl86t.dll", "_internal\tk86t.dll", "_internal\_tcl_data", "_internal\_tk_data",
+          "_internal\assets\sample_1600x900.png")
+$missing = @($need | Where-Object { -not (Test-Path "dist\$Name\$_") })
+if ($missing) { throw "release folder is missing: $($missing -join ', ')" }
+
 # --- self-test the built exe (offline, no clicks; isolated data folder) --------------
 $stHome = Join-Path $Root "build\selftest-home"
 if (Test-Path $stHome) { Remove-Item -Recurse -Force $stHome }
@@ -93,9 +100,14 @@ New-Item -ItemType Directory -Force $stHome | Out-Null
 $stOut = Join-Path $Root "build\selftest.json"
 if (Test-Path $stOut) { Remove-Item -Force $stOut }
 $env:R2_HELPER_HOME = $stHome
-Write-Host "==> self-test of dist\$Name\$Name.exe"
+# R2_SKIP_DESKTOP_TESTS=1 (locked/headless build machine): the exe's self-test then skips the one
+# step that maps a small window for PrintWindow; everything else still runs.
+$noWindow = $env:R2_SKIP_DESKTOP_TESTS -eq "1"
+if ($noWindow) { $env:R2_SELFTEST_NO_WINDOW = "1" }
+Write-Host "==> self-test of dist\$Name\$Name.exe$(if ($noWindow) { ' (no window)' })"
 $p = Start-Process -FilePath "dist\$Name\$Name.exe" -ArgumentList @("--selftest", "`"$stOut`"") -Wait -PassThru
 Remove-Item Env:\R2_HELPER_HOME
+if ($noWindow) { Remove-Item Env:\R2_SELFTEST_NO_WINDOW }
 if (-not (Test-Path $stOut)) { throw "self-test wrote no result (exit $($p.ExitCode))" }
 $st = Get-Content $stOut -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($p.ExitCode -ne 0 -or -not $st.passed) {

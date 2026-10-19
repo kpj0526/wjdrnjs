@@ -1,10 +1,25 @@
 """Headless GUI smoke test: import, build the window hidden, exercise form -> Settings, close.
-Never starts a run and never captures the screen."""
+Never starts a run and never captures the screen.
+
+Every App is built with R2_HIDE_TEST_WINDOWS=1, so no window is shown on screen. The two tests
+that need a visible window are desktop tests (skipped with R2_SKIP_DESKTOP_TESTS=1)."""
+import os
+import sys
+
 import pytest
 
 tk = pytest.importorskip("tkinter")
 
 from r2clicker.geometry import Mapping  # noqa: E402
+
+desktop = pytest.mark.skipif(
+    sys.platform != "win32" or os.environ.get("R2_SKIP_DESKTOP_TESTS") == "1", reason="shows a window on the desktop"
+)
+
+
+@pytest.fixture(autouse=True)
+def _hidden_windows(monkeypatch):
+    monkeypatch.setenv("R2_HIDE_TEST_WINDOWS", "1")
 
 
 def test_gui_module_imports():
@@ -34,6 +49,7 @@ def test_window_builds_with_sample_and_preview(app, tmp_path):
     assert app.canvas.find_all()  # preview overlay drawn
     assert app.settings_file == tmp_path / "settings.json"
     assert app.log_file == tmp_path / "logs" / "r2helper.log" and app.log_file.exists()
+    assert not app.root.winfo_viewable()  # R2_HIDE_TEST_WINDOWS: nothing appears on screen
 
 
 def test_wait_interval_field_reaches_settings(app):
@@ -158,6 +174,7 @@ def test_start_uses_typed_wait_interval(app, monkeypatch):
             pass
 
     monkeypatch.setattr(gui, "Bot", FakeBot)
+    _fake_capture(app, monkeypatch, gui)  # preflight needs a game window
     app.vars["wait_interval"][0].set("9.5")
     app.vars["window_title"][0].set("Typed")
     app.start()
@@ -209,9 +226,11 @@ def _new_app(tk_root, monkeypatch, tmp_path, **kw):
     return gui.App(top, **kw)
 
 
+@desktop
 def test_window_opens_visible_inside_a_monitor(tk_root, tmp_path, monkeypatch):
     from r2clicker.winplace import monitor_work_areas, parse_geometry
 
+    monkeypatch.delenv("R2_HIDE_TEST_WINDOWS")  # this test is about showing the window
     app = _new_app(tk_root, monkeypatch, tmp_path)  # show=True: deiconify/lift/focus
     app.root.update()
     try:
@@ -223,6 +242,7 @@ def test_window_opens_visible_inside_a_monitor(tk_root, tmp_path, monkeypatch):
         app.on_close()
 
 
+@desktop
 def test_offscreen_saved_position_is_corrected_and_geometry_remembered(tk_root, tmp_path, monkeypatch):
     from r2clicker.config import Settings
     from r2clicker.winplace import parse_geometry
@@ -356,3 +376,200 @@ def test_startup_crash_is_written_to_a_log(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         gui.main()
     assert "no Tcl" in (tmp_path / "startup-error.log").read_text(encoding="utf-8")
+
+
+# --- manual candidate points ------------------------------------------------------------------
+
+
+class _Ev:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
+
+def _click(app, ref_x, ref_y):
+    """Click the preview at a reference point (the canvas is half of 1600x900)."""
+    app._on_press(_Ev(ref_x // 2, ref_y // 2))
+    app._on_release(_Ev(ref_x // 2, ref_y // 2))
+
+
+def test_manual_mode_adds_numbered_points_in_click_order(app):
+    app.drag_mode.set("manual")
+    for p in ((600, 300), (1000, 250), (500, 550)):
+        _click(app, *p)
+    assert app.settings.manual_points == [(600, 300), (1000, 250), (500, 550)]
+    labels = [app.canvas.itemcget(i, "text") for i in app.canvas.find_withtag("manual_label")]
+    assert labels == ["1", "2", "3"]
+    assert app.manual_list.size() == 3 and app.manual_list.get(1).strip().startswith("2. (1000, 250)")
+    assert app.settings.roi == (350, 130, 1250, 670)  # the ROI drag did not run
+
+
+@pytest.mark.parametrize("pt, why", [((100, 400), "ROI"), ((800, 440), "player"), ((1000, 150), "UI")])
+def test_manual_point_outside_roi_or_in_avoid_area_is_refused(app, pt, why):
+    app.drag_mode.set("manual")
+    _click(app, *pt)
+    assert app.settings.manual_points == []
+    assert "not added" in app.manual_info.cget("text") and why in app.manual_info.cget("text")
+
+
+def test_clicking_an_existing_point_selects_it(app):
+    app.drag_mode.set("manual")
+    _click(app, 600, 300)
+    _click(app, 1000, 250)
+    _click(app, 602, 302)  # within PICK_RADIUS of point 1: select, do not add
+    assert len(app.settings.manual_points) == 2 and app.manual_list.curselection() == (0,)
+
+
+def test_delete_move_and_clear_manual_points(app, monkeypatch):
+    from r2clicker import gui
+
+    app.drag_mode.set("manual")
+    for p in ((600, 300), (1000, 250), (500, 550)):
+        _click(app, *p)
+    app.manual_list.selection_clear(0, "end")
+    app.manual_list.selection_set(2)
+    app.move_manual_point(-1)
+    assert app.settings.manual_points == [(600, 300), (500, 550), (1000, 250)]
+    assert app.manual_list.curselection() == (1,)
+    app.move_manual_point(-1)
+    app.move_manual_point(-1)  # already first: no change
+    assert app.settings.manual_points == [(500, 550), (600, 300), (1000, 250)]
+    app.delete_manual_point()
+    assert app.settings.manual_points == [(600, 300), (1000, 250)]
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: False)
+    app.clear_manual_points()
+    assert len(app.settings.manual_points) == 2  # cancelled
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    app.clear_manual_points()
+    assert app.settings.manual_points == [] and app.manual_list.size() == 0
+    assert not app.canvas.find_withtag("manual")  # the automatic grid is drawn again
+
+
+def test_manual_points_saved_and_loaded_as_reference_coordinates(app, tk_root, tmp_path, monkeypatch):
+    from r2clicker.config import Settings
+
+    app.drag_mode.set("manual")
+    _click(app, 600, 300)
+    _click(app, 1000, 250)
+    app.save()
+    assert Settings.load(tmp_path / "settings.json").manual_points == [(600, 300), (1000, 250)]
+    again = _new_app(tk_root, monkeypatch, tmp_path, show=False)
+    try:
+        assert again.settings.manual_points == [(600, 300), (1000, 250)]
+        assert again.manual_list.size() == 2 and len(again.canvas.find_withtag("manual_label")) == 2
+    finally:
+        again.on_close()
+
+
+def test_roi_change_marks_points_refused_and_start_is_blocked(app, monkeypatch):
+    from r2clicker import gui
+
+    monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("must not start with an unsafe manual point"))
+    app.drag_mode.set("manual")
+    _click(app, 600, 300)
+    _click(app, 1000, 250)
+    app.vars["roi"][0].set("350, 130, 800, 670")  # point 2 is now outside
+    app.apply()  # editing is still possible: the point is only marked
+    assert app.settings.roi == (350, 130, 800, 670) and not app.errors
+    assert "REFUSED" in app.manual_list.get(1) and "REFUSED" not in app.manual_list.get(0)
+    app.start()
+    assert app.thread is None and any("manual point 2" in e for e in app.errors)
+
+
+def test_start_passes_manual_points_to_bot_in_order(app, monkeypatch):
+    from r2clicker import gui
+
+    started = []
+
+    class FakeBot:
+        def __init__(self, s, grab, mouse):
+            started.append((s, mouse))
+            self.stop_reason = ""
+
+        def run(self):
+            pass
+
+        def stop(self, why=""):
+            pass
+
+    monkeypatch.setattr(gui, "Bot", FakeBot)
+    _fake_capture(app, monkeypatch, gui)
+    app.drag_mode.set("manual")
+    _click(app, 1000, 250)
+    _click(app, 600, 300)
+    app.start()
+    app.thread.join(2)
+    (s, mouse), = started
+    assert s.manual_points == [(1000, 250), (600, 300)]
+    assert s.dry_run and isinstance(mouse, gui.DryRunMouse)
+    _click(app, 500, 550)  # editing after start must not change the running bot's settings
+    assert s.manual_points == [(1000, 250), (600, 300)]
+
+
+# --- preflight gate ----------------------------------------------------------------------------
+
+
+def test_start_refused_when_preflight_fails_even_live(app, monkeypatch):
+    from r2clicker import gui
+
+    monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("must not start"))
+    monkeypatch.setattr(gui, "Win32Mouse", lambda: pytest.fail("no live input before preflight passes"))
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: pytest.fail("no live prompt either"))
+    app.vars["window_title"][0].set("NoSuchWindow-r2-gui-test")
+    app.dry_var.set(False)
+    app.start()
+    assert app.thread is None and any("game window" in e for e in app.errors)
+
+
+def test_start_refused_on_blank_capture(app, monkeypatch):
+    import numpy as np
+
+    from r2clicker import gui
+
+    _fake_capture(app, monkeypatch, gui)
+    monkeypatch.setattr(app.grabber, "grab", lambda m: np.zeros((900, 1600, 3), np.uint8))
+    monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("must not start"))
+    app.start()
+    assert app.thread is None and any("blank" in e for e in app.errors)
+
+
+def test_live_prompt_lists_preflight_warnings(app, monkeypatch):
+    from r2clicker import gui, preflight
+
+    _fake_capture(app, monkeypatch, gui)
+    monkeypatch.setattr(preflight, "window_elevated", lambda h: None)
+    monkeypatch.setattr(preflight, "self_elevated", lambda: False)
+    asked = []
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda title, msg, **k: asked.append(msg) or False)
+    monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("declined: must not start"))
+    app.vars["window_title"][0].set("")  # whole screen: warns
+    app.dry_var.set(False)
+    app.start()
+    assert asked and "Preflight warnings" in asked[0] and "game window" in asked[0]
+    assert app.thread is None
+
+
+def test_preflight_button_shows_result(app, monkeypatch):
+    from r2clicker import gui
+
+    _fake_capture(app, monkeypatch, gui)
+    shown = []
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda title, msg: shown.append(title))
+    app.preflight_check()
+    assert shown == ["Preflight passed"] and not app.errors
+    app.settings.manual_points.append((800, 440))  # unsafe point loaded from a file
+    app.preflight_check()
+    assert any("manual point 1" in e for e in app.errors)
+
+
+def test_gui_save_keeps_unknown_keys(tk_root, tmp_path, monkeypatch):
+    import json
+
+    (tmp_path / "settings.json").write_text(json.dumps({"future_option": 5, "wait_interval": 2.0}), encoding="utf-8")
+    app = _new_app(tk_root, monkeypatch, tmp_path, show=False)
+    try:
+        app.vars["wait_interval"][0].set("3.0")
+        app.save()
+        d = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert d["future_option"] == 5 and d["wait_interval"] == 3.0
+    finally:
+        app.on_close()

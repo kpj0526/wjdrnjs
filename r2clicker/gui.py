@@ -54,6 +54,8 @@ FORM = [
     ("verify_delay", "Check nameplate after left click (s)", "float"),
     ("verify_timeout", "Give up nameplate check after (s)", "float"),
     ("right_click_delay", "Delay before right click (s)", "float"),
+    ("right_click_hover", "Rest on target before right press (s)", "float"),
+    ("right_click_hold", "Hold right button (s)", "float"),
     ("max_attempts", "Max left clicks per cycle", "int"),
     ("max_cycles", "Max cycles (0=unlimited)", "int"),
     ("max_consecutive_failed_cycles", "Stop after N empty cycles", "int"),
@@ -721,7 +723,7 @@ class App:
             # refused start and leave the GUI usable instead of letting a Tk
             # callback traceback escape with no visible explanation.
             try:
-                mouse = Win32Mouse()
+                mouse = Win32Mouse(right_hover_s=s.right_click_hover, right_hold_s=s.right_click_hold)
             except Exception as e:
                 log.exception("could not initialise live mouse input")
                 messagebox.showerror("Live mode unavailable", str(e))

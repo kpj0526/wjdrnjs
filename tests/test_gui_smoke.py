@@ -512,7 +512,7 @@ def test_start_refused_when_preflight_fails_even_live(app, monkeypatch):
     from r2clicker import gui
 
     monkeypatch.setattr(gui, "Bot", lambda *a, **k: pytest.fail("must not start"))
-    monkeypatch.setattr(gui, "Win32Mouse", lambda: pytest.fail("no live input before preflight passes"))
+    monkeypatch.setattr(gui, "Win32Mouse", lambda **k: pytest.fail("no live input before preflight passes"))
     monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: pytest.fail("no live prompt either"))
     app.vars["window_title"][0].set("NoSuchWindow-r2-gui-test")
     app.dry_var.set(False)
@@ -573,3 +573,24 @@ def test_gui_save_keeps_unknown_keys(tk_root, tmp_path, monkeypatch):
         assert d["future_option"] == 5 and d["wait_interval"] == 3.0
     finally:
         app.on_close()
+
+
+def test_live_start_uses_the_typed_right_click_timing(app, monkeypatch):
+    from r2clicker import gui, preflight
+
+    _fake_capture(app, monkeypatch, gui)
+    monkeypatch.setattr(preflight, "window_elevated", lambda h: None)
+    monkeypatch.setattr(preflight, "self_elevated", lambda: False)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    made = []
+    monkeypatch.setattr(gui, "Win32Mouse", lambda **k: made.append(k) or gui.DryRunMouse())
+    monkeypatch.setattr(gui, "Bot", lambda s, grab, mouse: type(
+        "B", (), {"run": lambda self: None, "stop": lambda self, why="": None, "stop_reason": ""})())
+    app.vars["window_title"][0].set("")
+    app.vars["right_click_hover"][0].set("0.2")  # typed, no Apply/Enter
+    app.vars["right_click_hold"][0].set("0.3")
+    app.dry_var.set(False)
+    app.start()
+    if app.thread:
+        app.thread.join(2)
+    assert made == [{"right_hover_s": 0.2, "right_hold_s": 0.3}]

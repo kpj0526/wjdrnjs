@@ -33,6 +33,9 @@ Files:
 If the folder is not writable (e.g. under Program Files), settings and logs go to
 %LOCALAPPDATA%\R2TargetHelper instead. "Open data folder" shows where.
 
+If left clicks work but the game ignores the right click, raise
+"Rest on target before right press" and "Hold right button" (e.g. 0.2 and 0.3).
+
 If the game runs as administrator, run this tool as administrator too, or Windows
 blocks its clicks (the log then says "SendInput was blocked").
 

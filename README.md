@@ -101,6 +101,8 @@ problem and does nothing, and the previous valid settings stay in effect.
    | Check nameplate after left click | `verify_delay` | First check this long after each left click. |
    | Give up nameplate check after | `verify_timeout` | Keep re-checking until this long after the click. |
    | Delay before right click | `right_click_delay` | Between a successful check and the right click. |
+   | Rest on target before right press | `right_click_hover` | The right click first moves onto the target with real mouse-move input, then waits this long before pressing (default 0.10). |
+   | Hold right button | `right_click_hold` | How long the right button stays down (default 0.15). Raise both if the game ignores the right click while left clicks work. |
 
    Note that the time from one right click to the next is `wait_interval` *plus* the next
    cycle's own work: screenshot, scoring, and one check per attempt (about 0.1 s each, plus

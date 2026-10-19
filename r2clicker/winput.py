@@ -60,29 +60,60 @@ if sys.platform == "win32":
         _fields_ = [("type", wintypes.DWORD), ("u", _U)]
 
 
+SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 76, 77, 78, 79
+GLIDE_STEPS = 4  # SendInput moves on the way to the right-click target
+
+
 class Win32Mouse:
-    """Real input. Moves with SetCursorPos, then sends button down/up via SendInput."""
+    """Real input. Moves with SetCursorPos, then sends button down/up via SendInput.
+
+    The right click first glides onto the target with real SendInput mouse moves (some games
+    only update what is under the cursor from mouse-move input, not from SetCursorPos), rests
+    there for right_hover_s and holds the button for right_hold_s (games that poll the button
+    state once per frame miss a press shorter than a frame).
+    """
 
     live = True
 
-    def __init__(self, press_s: float = 0.03) -> None:
+    def __init__(self, press_s: float = 0.03, right_hover_s: float = 0.10, right_hold_s: float = 0.15) -> None:
         if sys.platform != "win32":
             raise RuntimeError("live input is only supported on Windows")
         self.press_s = press_s
+        self.right_hover_s = right_hover_s
+        self.right_hold_s = right_hold_s
         self._u = ctypes.windll.user32
 
-    def _send(self, flag: int) -> bool:
+    def _send(self, flag: int, dx: int = 0, dy: int = 0) -> bool:
         inp = _INPUT(type=0)
-        inp.mi = _MOUSEINPUT(0, 0, 0, flag, 0, 0)
+        inp.mi = _MOUSEINPUT(dx, dy, 0, flag, 0, 0)
         return self._u.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT)) == 1
 
-    def _buttons(self, down: int, up: int) -> None:
+    def _buttons(self, down: int, up: int, hold_s: float | None = None) -> None:
         if not self._send(down):
             raise InputBlocked("SendInput was blocked; if the game runs as administrator, run this tool as administrator too")
         try:
-            time.sleep(self.press_s)
+            time.sleep(self.press_s if hold_s is None else hold_s)
         finally:
             self._send(up)  # never leave a button held down
+
+    def _input_move(self, x: int, y: int) -> None:
+        """One absolute SendInput mouse move to screen pixel (x, y) on the virtual desktop."""
+        m = self._u.GetSystemMetrics
+        vx, vy = m(SM_XVIRTUALSCREEN), m(SM_YVIRTUALSCREEN)
+        vw, vh = max(2, m(SM_CXVIRTUALSCREEN)), max(2, m(SM_CYVIRTUALSCREEN))
+        dx = round((x - vx) * 65535 / (vw - 1))
+        dy = round((y - vy) * 65535 / (vh - 1))
+        if not self._send(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, dx, dy):
+            raise InputBlocked("SendInput was blocked; if the game runs as administrator, run this tool as administrator too")
+
+    def glide(self, x: int, y: int) -> None:
+        """Move onto (x, y) with SendInput mouse moves, then pin the exact pixel with SetCursorPos."""
+        start = cursor_pos() or (x, y)
+        for i in range(1, GLIDE_STEPS + 1):
+            self._input_move(round(start[0] + (x - start[0]) * i / GLIDE_STEPS),
+                             round(start[1] + (y - start[1]) * i / GLIDE_STEPS))
+            time.sleep(0.005)
+        self.move(x, y)
 
     def release(self) -> None:
         """Send button-up for both buttons (recovery after an error or stop)."""
@@ -99,9 +130,9 @@ class Win32Mouse:
         self._buttons(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
 
     def right_click(self, x: int, y: int) -> None:
-        self.move(x, y)
-        time.sleep(0.02)
-        self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
+        self.glide(x, y)
+        time.sleep(self.right_hover_s)  # let the game see the cursor on the mob before pressing
+        self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, self.right_hold_s)
 
 
 def cursor_pos() -> tuple[int, int] | None:

@@ -151,6 +151,7 @@ def test_load_image_not_opened_when_form_invalid(app, monkeypatch):
 
 
 def test_check_on_image_uses_typed_thresholds_and_keeps_mode(app):
+    app.vars["verify_mode"][0].set("diff")
     app.vars["plate_min_white"][0].set("77")
     app.test_verify()
     assert app.settings.plate_min_white == 77

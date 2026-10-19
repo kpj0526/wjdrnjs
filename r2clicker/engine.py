@@ -23,7 +23,7 @@ from .candidates import Candidate, build_candidates
 from .capture import CaptureError, is_blank, point_belongs_to
 from .config import Settings
 from .geometry import Mapping, WindowNotFound, is_foreground, monitor_top_left, resolve_mapping
-from .vision import VerifyResult, load_template, verify
+from .vision import VerifyResult, load_template, target_panel_shown, verify
 from .winput import DryRunMouse, InputBlocked, cursor_pos, key_down
 
 log = logging.getLogger("r2clicker")
@@ -204,10 +204,37 @@ class Bot:
                 self.mouse.move(*park)
                 log.info("selected at ref(%d,%d); right click at screen%s", c.x, c.y, target)
                 self.last_success = (c.x, c.y)
+                if s.confirm_right_click:
+                    self._confirm_right_click(m, target, park)
                 return CycleResult(True, i, c, res, tried)
             self._save_shot(after, f"fail{i}")
             baseline = after  # cursor is parked, so the latest frame is the best baseline
         return CycleResult(False, len(tried), None, res, tried)
+
+    def _confirm_right_click(self, m: Mapping, target: tuple[int, int], park: tuple[int, int]) -> bool:
+        """Wait for the target panel the game shows when a right click registers; right click again
+        (right_click_retries times) when it does not appear. Only logs: the cycle still counts."""
+        s = self.s
+        for attempt in range(s.right_click_retries + 1):
+            t0 = time.perf_counter()
+            while True:
+                shown, detail = target_panel_shown(self.grab(m), s, m)
+                if shown:
+                    log.info("right click confirmed: target panel shown (%s)", detail)
+                    return True
+                if time.perf_counter() - t0 >= s.panel_timeout or self.stop_event.is_set():
+                    break
+                self._sleep(0.05)
+            if attempt == s.right_click_retries or self.stop_event.is_set():
+                break
+            if not self._game_ready(m) or not self._clickable(m, *target):
+                break
+            log.warning("no target panel after the right click (%s); right clicking again", detail)
+            self.mouse.right_click(*target)
+            self.mouse.move(*park)
+        log.warning("right click NOT confirmed: no target panel at the bottom (%s). If the game shows it, "
+                    "raise 'Right button press time' or check 'Target panel rect'", detail)
+        return False
 
     # --- full run --------------------------------------------------------------
     def run(self) -> None:

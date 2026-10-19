@@ -139,3 +139,13 @@ def test_current_right_click_timing_is_kept(tmp_path):
     Settings(right_click_delay=0.2, right_click_hover=0.05, right_click_press=0.3).save(p)
     s = Settings.load(p)
     assert (s.right_click_delay, s.right_click_hover, s.right_click_press) == (0.2, 0.05, 0.3)
+
+
+def test_guessed_check_values_from_older_files_get_the_calibrated_defaults(tmp_path):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"settings_version": 5, "verify_mode": "diff", "plate_min_white": 60,
+                             "plate_max_distance": 150, "marker_min_green": 30, "wait_interval": 2.0}),
+                 encoding="utf-8")
+    s = Settings.load(p)
+    assert (s.verify_mode, s.plate_min_white, s.plate_max_distance) == ("absolute", 150, 250)
+    assert s.marker_min_green == 30 and s.wait_interval == 2.0  # everything else is kept

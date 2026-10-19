@@ -78,8 +78,10 @@ class FakeGame:
 
 
 def fast_settings(**kw):
+    # the synthetic game has no target panel and was built for the frame-difference check
     base = dict(settle_delay=0, verify_delay=0.0, verify_timeout=0.0, right_click_delay=0, wait_interval=0,
-                corner_failsafe=False, emergency_hotkey="", sticky_radius=0)
+                corner_failsafe=False, emergency_hotkey="", sticky_radius=0, confirm_right_click=False,
+                verify_mode="diff")
     base.update(kw)
     return Settings(**base)
 

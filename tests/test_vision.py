@@ -46,7 +46,7 @@ def test_white_text_without_green_markers_rejected(base_img, base):
 
 def test_nameplate_already_present_in_baseline_is_not_new(base_img):
     a = frame_with_nameplate(base_img, (700, 250))
-    assert not verify(a, Settings(), M, before=a).ok
+    assert not verify(a, Settings(verify_mode="diff"), M, before=a).ok
 
 
 def test_nameplate_outside_roi_margin_ignored(base_img, base):

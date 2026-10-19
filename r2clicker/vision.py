@@ -241,3 +241,23 @@ def verify(
 def _client_box_to_ref(b: Rect, mapping: Mapping) -> Rect:
     x1, y1, x2, y2 = b
     return (round(x1 / mapping.sx), round(y1 / mapping.sy), round(x2 / mapping.sx), round(y2 / mapping.sy))
+
+
+def target_panel_shown(img: np.ndarray, s: Settings, mapping: Mapping) -> tuple[bool, str]:
+    """Is the target panel (dark box with the mob's name and green HP dots, bottom centre) shown?
+
+    It appears when a right click on a mob registers. Real R2 screenshots: with the panel the
+    rect is ~78 % dark with ~320 white and ~28 green pixels; without it at most ~47 % dark, ~170
+    white (bright mob parts) and no green.
+    """
+    H, W = img.shape[:2]
+    x1, y1, x2, y2 = mapping.rect_to_client(s.target_panel_rect)
+    a = img[max(0, y1):min(H, y2), max(0, x1):min(W, x2), :3].astype(np.int16)
+    if a.size == 0:
+        return False, "target panel rect is outside the image"
+    white = int(white_mask(a, s).sum())
+    green = int(green_mask(a, s).sum())
+    dark = float((a.mean(axis=2) < 60).mean())
+    area = a.shape[0] * a.shape[1]
+    ok = dark >= 0.6 and white >= 0.006 * area and green >= 5
+    return ok, f"white={white} green={green} dark={dark:.2f}"

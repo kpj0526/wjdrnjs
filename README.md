@@ -343,10 +343,18 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
   game uncovered, including by the helper, or the capture fails safely.
 - `PrintWindow` asks the game to redraw into memory on every grab. With some games that costs
   a few ms or causes flicker; if so, choose `screen`.
-- A selection needs white nameplate text **with green markers** around it, so a corpse
-  nameplate without green markers does not count. This has not been checked against real
-  corpse screenshots.
-- The nameplate must be within *Nameplate max distance from click* (default 150 reference
+- The nameplate check is calibrated on three real screenshots from the customer's PC
+  (`tests/real/`): nothing selected, after a left click (white "황동석 문지기" with a green HP
+  bar above it), and after left + right click. The real nameplate has ~320 white px in its
+  text box, a screen without one up to ~60, so *Min white text px* is 150 and the mode is
+  `absolute` (a nameplate that stays visible still counts). A corpse nameplate without the
+  green bar does not count; this has not been checked against a real corpse screenshot.
+- **Right click confirmation:** a right click that registers shows the target panel at the
+  bottom centre (dark box, mob name, green HP dots). After the right click the tool looks for
+  it for *Wait for target panel* seconds and right clicks again (*Right click again if no
+  panel*, default once) if it does not appear. The log says `right click confirmed` or
+  `right click NOT confirmed`. Turn it off with *Confirm right click*.
+- The nameplate must be within *Nameplate max distance from click* (default 250 reference
   px) of the clicked point. Another mob's or player's nameplate elsewhere on screen does not
   count. Set it to 0 to accept a nameplate anywhere (the behaviour before 0.3.0).
 - The window title filter is a substring match. Use a distinctive part of the game's title

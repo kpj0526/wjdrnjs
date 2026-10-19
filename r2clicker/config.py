@@ -14,8 +14,9 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 REF_W, REF_H = 1600, 900
-SETTINGS_VERSION = 5  # 2: hide_helper_from_capture is an explicit opt-in (default off)
+SETTINGS_VERSION = 6  # 2: hide_helper_from_capture is an explicit opt-in (default off)
                       # 5: right click right after a successful check (0.2.x files: auto clicker)
+                      # 6: nameplate check calibrated on real R2 screenshots
 
 Rect = tuple[int, int, int, int]  # x1, y1, x2, y2 (x2/y2 exclusive)
 Point = tuple[int, int]
@@ -76,7 +77,8 @@ class Settings:
     right_click_target: str = "same"  # same | park  (where the right click lands)
 
     # --- verification (nameplate: white text + green markers) ---
-    verify_mode: str = "diff"         # diff = only pixels new since baseline; absolute = as-is
+    verify_mode: str = "absolute"     # absolute = as-is (a still visible nameplate counts);
+                                      # diff = only pixels new since the baseline
     verify_margin: int = 80           # verify area = ROI grown by this (nameplate floats above mob)
     white_min: int = 215              # min channel value for "white"
     white_max_spread: int = 30        # max(R,G,B)-min(R,G,B) for "white"
@@ -90,10 +92,11 @@ class Settings:
     verify_ignore_rects: list[Rect] = field(default_factory=lambda: [(735, 345, 865, 480)])  # player HP bar + skill flash
     plate_w: int = 90                 # expected nameplate text box (reference px)
     plate_h: int = 16
-    plate_min_white: int = 60         # min white pixels inside the best text box
+    plate_min_white: int = 150        # min white pixels inside the best text box (real R2 nameplate:
+                                      # ~320; screen without one: up to ~60)
     marker_search: int = 40           # look for green this far around the text box
     marker_min_green: int = 12        # min green pixels around the text box
-    plate_max_distance: int = 150     # nameplate centre at most this far from the clicked point (0 = anywhere);
+    plate_max_distance: int = 250     # nameplate centre at most this far from the clicked point (0 = anywhere);
                                       # rejects other mobs' or players' nameplates elsewhere on screen
     template_path: str = ""           # optional cropped nameplate PNG for template matching
     template_min_score: float = 0.55
@@ -112,6 +115,12 @@ class Settings:
     # --- logging ---
     log_dir: str = "logs"             # relative paths are resolved against the app data folder
     save_failure_shots: bool = False
+
+    # --- right click confirmation: the target panel at the bottom centre ("<name>" + HP dots) ---
+    confirm_right_click: bool = True  # after the right click, look for the target panel
+    target_panel_rect: Rect = (690, 735, 910, 782)
+    panel_timeout: float = 0.6        # wait this long for the panel after a right click
+    right_click_retries: int = 1      # right click again this many times when no panel appears
 
     settings_version: int = SETTINGS_VERSION
     load_warnings: list[str] = field(default_factory=list, repr=False, compare=False)
@@ -154,6 +163,8 @@ class Settings:
         # before 5 the right click waited 0.1 s after the check (0.1.x) or meant something else (0.2.x):
         # the new defaults (right away) apply
         skip = {"right_click_delay", "right_click_hover"} if version < 5 else set()
+        if version < 6:  # guessed before real screenshots: the calibrated defaults apply
+            skip |= {"verify_mode", "plate_min_white", "plate_max_distance"}
         for f in fields(cls):
             if f.name not in data or f.name in _INTERNAL or f.name in skip:
                 continue
@@ -218,6 +229,9 @@ class Settings:
             px, py = self.park_point
             if x1 <= px < x2 and y1 <= py < y2:
                 e.append("park point must be outside the ROI (the cursor would hover mobs)")
+        r = self.target_panel_rect
+        if len(r) != 4 or not (0 <= r[0] < r[2] <= W and 0 <= r[1] < r[3] <= H):
+            e.append(f"target_panel_rect must be x1,y1,x2,y2 inside the {W}x{H} game client")
         for name in ("ui_rects", "verify_ignore_rects"):
             for r in getattr(self, name):
                 if len(r) != 4 or r[0] >= r[2] or r[1] >= r[3]:
@@ -232,6 +246,7 @@ class Settings:
             "green_min_g": (0, 255), "green_min_delta": (0, 255), "diff_min": (0, 255),
             "outline_dark_max": (0, 255), "outline_radius": (0, 10), "max_stroke_run": (0, 400),
             "plate_w": (4, 800), "plate_h": (4, 200), "plate_min_white": (1, 10**6),
+            "panel_timeout": (0, 10), "right_click_retries": (0, 10),
             "marker_search": (0, 400), "marker_min_green": (0, 10**6), "template_min_score": (0, 1),
         }
         for name, (lo, hi) in rng.items():

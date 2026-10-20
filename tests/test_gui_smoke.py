@@ -629,8 +629,11 @@ def test_test_right_click_button(app, monkeypatch, caplog, tmp_path, panel, leve
         def __init__(self, **k):
             sent.append(k)
 
-        def right_click_here(self):
-            sent.append("click")
+        def left_click(self, x, y):
+            sent.append(("left", x, y))
+
+        def right_click(self, x, y):
+            sent.append(("right", x, y))
 
     monkeypatch.setattr(gui, "Win32Mouse", FakeMouse)
     monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
@@ -646,7 +649,8 @@ def test_test_right_click_button(app, monkeypatch, caplog, tmp_path, panel, leve
         app.test_right_click()
         later.pop(0)()   # 3 s later: the click
         later.pop(0)()   # then the panel check
-    assert sent == [{"right_hover_s": 0, "right_press_s": 0.15, "right_api": "mouse_event"}, "click"]
+    assert sent == [{"right_hover_s": 0.1, "right_press_s": 0.15, "right_api": "mouse_event"},
+                    ("left", 900, 500), ("right", 900, 500)]  # the panel needs a left click first
     rec = [r for r in caplog.records if "TEST: " in r.getMessage() and "panel" in r.getMessage()]
     assert rec and rec[-1].levelname == level and "client=1600x900" in rec[-1].getMessage()
     shots = list((tmp_path / "shots").glob("*_test_right_click.png"))

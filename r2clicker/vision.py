@@ -243,6 +243,16 @@ def _client_box_to_ref(b: Rect, mapping: Mapping) -> Rect:
     return (round(x1 / mapping.sx), round(y1 / mapping.sy), round(x2 / mapping.sx), round(y2 / mapping.sy))
 
 
+def panel_rect(s: Settings, w: int, h: int) -> Rect:
+    """target_panel_rect (measured on a ref_w x ref_h screen) inside a w x h client.
+
+    R2 draws its UI at a fixed pixel size anchored at the bottom centre (the bottom bar is ~80 px
+    high at 1600x900 and at 1024x768), so the rect is shifted, not scaled."""
+    x1, y1, x2, y2 = s.target_panel_rect
+    dx, dy = w // 2 - s.ref_w // 2, h - s.ref_h
+    return x1 + dx, y1 + dy, x2 + dx, y2 + dy
+
+
 def target_panel_shown(img: np.ndarray, s: Settings, mapping: Mapping) -> tuple[bool, str]:
     """Is the target panel (dark box with the mob's name and green HP dots, bottom centre) shown?
 
@@ -251,7 +261,7 @@ def target_panel_shown(img: np.ndarray, s: Settings, mapping: Mapping) -> tuple[
     white (bright mob parts) and no green.
     """
     H, W = img.shape[:2]
-    x1, y1, x2, y2 = mapping.rect_to_client(s.target_panel_rect)
+    x1, y1, x2, y2 = panel_rect(s, W, H)
     a = img[max(0, y1):min(H, y2), max(0, x1):min(W, x2), :3].astype(np.int16)
     if a.size == 0:
         return False, "target panel rect is outside the image"

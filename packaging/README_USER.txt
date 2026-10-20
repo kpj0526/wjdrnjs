@@ -42,8 +42,9 @@ right click on the mob under the cursor). The cursor is placed like the left cli
 extra mouse-move input (from 0.4.4: that move input made the game ignore the right click).
 If the game ignores the right click, raise "Right button press time" (default 0.15, e.g. 0.3).
 
-Right click test: press "Test right click (3 s)", click the game's title bar, rest the mouse on
-a selected mob. One right click is sent; the log says whether the target panel appeared.
+Click test: press "Test left + right click (3 s)", click the game's title bar, rest the mouse
+on a live mob. A left click and then a right click are sent; the log says whether the target
+panel appeared (it only appears after left + right click).
 It also saves a screenshot (logs\shots\..._test_right_click.png) with the checked area
 in red: send that picture if the result is unclear.
 "Right click input API" is mouse_event by default (sendinput is the alternative).

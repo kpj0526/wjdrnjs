@@ -372,14 +372,16 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
 - **No SendInput mouse moves (0.4.4), mouse_event by default.** Up to 0.4.3 the right click
   moved the cursor with absolute SendInput moves (a glide back, then a 1 px nudge); now it is
   placed exactly like the left click (SetCursorPos only). The right button goes through
-  `mouse_event` by default, the API of a PowerShell right click that R2 took (settings files
-  from before 0.4.4 get the new default). The cause is **not confirmed**: a 0.4.3 *Test right
-  click* (SendInput button, no move at all) also showed no target panel, so either the button
-  API matters or the panel is not where *Target panel rect* looks on that screen. The test
-  screenshot (0.4.5) tells which.
-- **Test right click (3 s)** sends one real right click where the mouse is 3 s later (no cursor
-  movement), with *Right click input API* (`mouse_event`, the default and what a PowerShell test uses,
-  or `sendinput`) and *Right button press time*, then logs whether the target panel appeared.
+  `mouse_event` by default (settings files from before 0.4.4 get the new default).
+- **Target panel at a fixed pixel size (0.4.6).** R2 draws its UI at a fixed pixel size at the
+  bottom centre (the bottom bar is ~80 px high at 1600x900 and at 1024x768). *Target panel
+  rect* is measured at 1600x900 and is now shifted to the bottom centre of the client, not
+  scaled. Before 0.4.6 a 1024x768 client (customer PC) looked below the panel, so every right
+  click was reported `NOT confirmed` (and sent again) even when it may have registered.
+- **Test left + right click (3 s)** sends a left click and then a right click where the mouse
+  is 3 s later, with the cycle's timing, *Right click input API* and *Right button press time*,
+  then logs whether the target panel appeared. The panel only appears after a left click
+  followed by a right click, so a right click alone shows nothing.
   It saves what it captured to `logs/shots/*_test_right_click.png` with the checked area
   outlined in red, and logs the game client size.
 - **Right click confirmation:** a right click that registers shows the target panel at the

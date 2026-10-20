@@ -16,7 +16,7 @@ from PIL import Image
 from r2clicker.config import Settings
 from r2clicker.engine import Bot
 from r2clicker.geometry import Mapping
-from r2clicker.vision import target_panel_shown, verify
+from r2clicker.vision import panel_rect, target_panel_shown, verify
 
 REAL = Path(__file__).resolve().parent / "real"
 M = Mapping(0, 0, 1600, 900)
@@ -65,10 +65,25 @@ def test_target_panel_marks_a_registered_right_click(shots, name, shown):
     assert ok is shown, detail
 
 
-def test_target_panel_follows_a_scaled_client(shots):
-    big = np.asarray(Image.fromarray(shots["right_clicked"]).resize((1920, 1080), Image.BILINEAR))
-    ok, detail = target_panel_shown(big, Settings(), Mapping(0, 0, 1920, 1080))
+def small_client(img):
+    """The same screen in a 1024x768 client: R2 keeps its UI at a fixed pixel size at the bottom
+    centre, so a smaller client is this crop around it (customer PC: client=1024x768)."""
+    return np.ascontiguousarray(img[900 - 768:, 800 - 512:800 + 512])
+
+
+def test_target_panel_is_found_in_a_1024x768_client(shots):
+    m = Mapping(0, 0, 1024, 768)
+    ok, detail = target_panel_shown(small_client(shots["right_clicked"]), Settings(), m)
     assert ok, detail
+    for name in ("plain", "selected"):
+        assert not target_panel_shown(small_client(shots[name]), Settings(), m)[0], name
+
+
+def test_panel_rect_is_shifted_not_scaled():
+    s = Settings()
+    assert panel_rect(s, 1600, 900) == s.target_panel_rect
+    assert panel_rect(s, 1024, 768) == (402, 603, 622, 650)  # just above the 80 px bottom bar
+    assert panel_rect(s, 1920, 1080) == (850, 915, 1070, 962)
 
 
 # --- the whole cycle on the real screens --------------------------------------------------------

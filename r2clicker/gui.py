@@ -27,7 +27,7 @@ from .paths import data_dir, resolve_in_data_dir, sample_image, settings_path
 from .preflight import run_preflight
 from .vision import load_template, verify
 from .winplace import fit_geometry, is_remote_session, monitor_work_areas
-from .vision import target_panel_shown
+from .vision import panel_rect, target_panel_shown
 from .winput import DryRunMouse, Win32Mouse, cursor_pos
 
 log = logging.getLogger("r2clicker")
@@ -167,7 +167,7 @@ class App:
         ttk.Button(bar, text="Load screenshot...", command=self.load_image).pack(side="left", padx=4)
         ttk.Button(bar, text="Test check on image", command=self.test_verify).pack(side="left")
         ttk.Button(bar, text="Preflight check", command=self.preflight_check).pack(side="left", padx=4)
-        ttk.Button(bar, text="Test right click (3 s)", command=self.test_right_click).pack(side="left")
+        ttk.Button(bar, text="Test left + right click (3 s)", command=self.test_right_click).pack(side="left")
         ttk.Label(bar, text="  Drag sets:").pack(side="left")
         self.drag_mode = tk.StringVar(value="roi")
         for v, t in (("roi", "ROI"), ("player", "player"), ("park", "park point"), ("manual", "mob points")):
@@ -690,34 +690,37 @@ class App:
         return report
 
     def test_right_click(self):
-        """One real right click where the mouse is 3 s from now (the user puts it on a mob), sent
-        with the configured API and press time, then a look for the target panel. Like the
-        PowerShell test, but with exactly the tool's input settings."""
+        """Left click, then right click, where the mouse is 3 s from now (the user puts it on a
+        mob), with the tool's input settings and timing, then a look for the target panel. The
+        panel only appears after a left click followed by a right click."""
         s = self._commit_form()
         if not s or (self.thread and self.thread.is_alive()):
             return
         if not messagebox.askyesno(
                 "Test right click",
-                "In 3 seconds ONE real right click is sent where the mouse is.\n\n"
-                "After OK: click the game's title bar, then rest the mouse on a selected mob.\n\nContinue?"):
+                "In 3 seconds ONE real left click and then ONE right click are sent where the mouse is.\n\n"
+                "After OK: click the game's title bar, then rest the mouse on a live mob.\n\nContinue?"):
             return
         try:
-            mouse = Win32Mouse(right_hover_s=0, right_press_s=s.right_click_press, right_api=s.right_click_api)
+            mouse = Win32Mouse(right_hover_s=s.right_click_hover, right_press_s=s.right_click_press,
+                               right_api=s.right_click_api)
         except Exception as e:
             messagebox.showerror("Test right click", str(e))
             return
-        log.info("TEST: right click in 3 s (%s, press %.3f s): put the mouse on a mob", s.right_click_api,
-                 s.right_click_press)
+        log.info("TEST: left + right click in 3 s (%s, press %.3f s): put the mouse on a mob",
+                 s.right_click_api, s.right_click_press)
         self.root.after(3000, lambda: self._fire_test_right_click(s, mouse))
 
     def _fire_test_right_click(self, s: Settings, mouse):
         pos = cursor_pos()
         try:
-            mouse.right_click_here()
+            mouse.left_click(*pos)
+            time.sleep(s.verify_delay)  # where the cycle checks the nameplate
+            mouse.right_click(*pos)
         except Exception as e:
-            log.error("TEST: right click failed: %s", e)
+            log.error("TEST: click failed: %s", e)
             return
-        log.info("TEST: right click sent at screen%s", pos)
+        log.info("TEST: left + right click sent at screen%s", pos)
         self.root.after(int(max(s.panel_timeout, 0.3) * 1000), lambda: self._check_test_panel(s))
 
     def _check_test_panel(self, s: Settings):
@@ -747,7 +750,7 @@ class App:
             d = resolve_in_data_dir(s.log_dir) / "shots"
             d.mkdir(parents=True, exist_ok=True)
             pic = Image.fromarray(np.ascontiguousarray(img[:, :, :3]))
-            ImageDraw.Draw(pic).rectangle(m.rect_to_client(s.target_panel_rect), outline=(255, 0, 0), width=2)
+            ImageDraw.Draw(pic).rectangle(panel_rect(s, pic.width, pic.height), outline=(255, 0, 0), width=2)
             path = d / f"{time.strftime('%Y%m%d-%H%M%S')}_test_right_click.png"
             pic.save(path)
             return path

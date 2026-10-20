@@ -1,0 +1,6 @@
+# Runtime + test dependencies for running from source (minimum versions).
+# The exact versions used for release builds are pinned in requirements-build.txt.
+numpy>=1.26
+Pillow>=10.0
+mss>=9.0
+pytest>=8.0

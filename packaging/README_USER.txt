@@ -47,7 +47,9 @@ on a live mob. A left click and then a right click are sent; the log says whethe
 panel appeared (it only appears after left + right click).
 It also saves a screenshot (logs\shots\..._test_right_click.png) with the checked area
 in red: send that picture if the result is unclear.
-"Right click input API" is mouse_event by default (sendinput is the alternative).
+"Right click input API": mouse_event (default), sendinput, or postmessage (sends the right
+click straight to the game window). If the game ignores the right click, try postmessage, and
+"Delay before right click" = 1.0 to right click later.
 No right click at all? The log says why: "[DRY RUN: not sent]" (untick DRY RUN),
 "right_click_target=park" (set "Right click at" to same), "nameplate check never passed",
 "lost focus before the right click".

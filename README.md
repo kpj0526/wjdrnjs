@@ -381,7 +381,13 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
 - **Test left + right click (3 s)** sends a left click and then a right click where the mouse
   is 3 s later, with the cycle's timing, *Right click input API* and *Right button press time*,
   then logs whether the target panel appeared. The panel only appears after a left click
-  followed by a right click, so a right click alone shows nothing.
+  followed by a right click, so a right click alone shows nothing. It waits *Delay before right
+  click* too, so a later right click can be tried.
+- **`postmessage` (0.4.7).** On the customer PC the tool's left click registers but its right
+  click does not (seen in the game, both with `sendinput` and `mouse_event`), while a right
+  click by hand does. R2 may read the right button (also its camera-drag button) from a path
+  that drops program input. *Right click input API* = `postmessage` posts the right button
+  messages straight to the game window under the cursor instead.
   It saves what it captured to `logs/shots/*_test_right_click.png` with the checked area
   outlined in red, and logs the game client size.
 - **Right click confirmation:** a right click that registers shows the target panel at the

@@ -10,7 +10,8 @@ MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
-BUTTON_APIS = ("sendinput", "mouse_event")  # mouse_event: the older API (what a PowerShell test uses)
+BUTTON_APIS = ("sendinput", "mouse_event", "postmessage")  # postmessage: straight to the window under the cursor
+WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, MK_RBUTTON = 0x0200, 0x0204, 0x0205, 0x0002
 
 
 class DryRunMouse:
@@ -94,6 +95,26 @@ class Win32Mouse:
         self._u.mouse_event(flag, 0, 0, 0, 0)
         return True
 
+    def _post_right(self, x: int, y: int, press_s: float) -> None:
+        """Right button messages posted to the window under screen (x, y), bypassing the input
+        devices (for games that read their mouse buttons from window messages only)."""
+        from ctypes import wintypes
+
+        pt = wintypes.POINT(int(x), int(y))
+        hwnd = self._u.WindowFromPoint(pt)
+        if not hwnd:
+            raise InputBlocked(f"no window under screen({x}, {y})")
+        self._u.ScreenToClient(hwnd, ctypes.byref(pt))
+        lp = ((pt.y & 0xFFFF) << 16) | (pt.x & 0xFFFF)
+        post = self._u.PostMessageW
+        post(hwnd, WM_MOUSEMOVE, 0, lp)
+        if not post(hwnd, WM_RBUTTONDOWN, MK_RBUTTON, lp):
+            raise InputBlocked("PostMessage was blocked; if the game runs as administrator, run this tool as administrator too")
+        try:
+            time.sleep(press_s)
+        finally:
+            post(hwnd, WM_RBUTTONUP, 0, lp)
+
     def _buttons(self, down: int, up: int, press_s: float | None = None, api: str = "sendinput") -> None:
         send = self._legacy if api == "mouse_event" else self._send
         if not send(down):
@@ -121,10 +142,16 @@ class Win32Mouse:
         self.move(x, y)  # like the left click: SetCursorPos only, never a SendInput move
         if self.right_hover_s > 0:
             time.sleep(self.right_hover_s)  # let the game see the cursor on the mob before clicking
+        if self.right_api == "postmessage":
+            self._post_right(x, y, self.right_press_s)
+            return
         self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, self.right_press_s, self.right_api)
 
     def right_click_here(self) -> None:
-        """Right click where the cursor is now, without moving it (the 'Test right click' button)."""
+        """Right click where the cursor is now, without moving it."""
+        if self.right_api == "postmessage":
+            self._post_right(*(cursor_pos() or (0, 0)), self.right_press_s)
+            return
         self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, self.right_press_s, self.right_api)
 
 

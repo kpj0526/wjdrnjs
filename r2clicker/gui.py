@@ -63,7 +63,7 @@ FORM = [
     ("max_consecutive_failed_cycles", "Stop after N empty cycles", "int"),
     ("right_click_target", "Right click at", "choice:same|park"),
     ("park_during_check", "Move cursor away while checking", "bool"),
-    ("right_click_api", "Right click input API", "choice:sendinput|mouse_event"),
+    ("right_click_api", "Right click input API", "choice:mouse_event|sendinput|postmessage"),
     ("Verification", None, None),
     ("verify_mode", "Mode", "choice:diff|absolute"),
     ("plate_min_white", "Min white text px", "int"),
@@ -707,15 +707,16 @@ class App:
         except Exception as e:
             messagebox.showerror("Test right click", str(e))
             return
-        log.info("TEST: left + right click in 3 s (%s, press %.3f s): put the mouse on a mob",
-                 s.right_click_api, s.right_click_press)
+        log.info("TEST: left + right click in 3 s (%s, right click %.2f s after the left, press %.3f s): "
+                 "put the mouse on a mob", s.right_click_api,
+                 s.verify_delay + s.right_click_delay + s.right_click_hover, s.right_click_press)
         self.root.after(3000, lambda: self._fire_test_right_click(s, mouse))
 
     def _fire_test_right_click(self, s: Settings, mouse):
         pos = cursor_pos()
         try:
             mouse.left_click(*pos)
-            time.sleep(s.verify_delay)  # where the cycle checks the nameplate
+            time.sleep(s.verify_delay + s.right_click_delay)  # the cycle's check, then 'Delay before right click'
             mouse.right_click(*pos)
         except Exception as e:
             log.error("TEST: click failed: %s", e)

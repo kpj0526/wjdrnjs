@@ -150,3 +150,43 @@ def test_unknown_api_is_refused():
 def test_the_right_button_defaults_to_mouse_event():
     assert Settings().right_click_api == "mouse_event"
     assert winput.Win32Mouse().right_api == "mouse_event"
+
+
+class PostUser32(FakeUser32):
+    """Adds the window functions: the game window's client starts at screen (100, 50)."""
+
+    def __init__(self, posted=True):
+        super().__init__()
+        self.posted = posted
+
+    def WindowFromPoint(self, pt):
+        return 0x1234
+
+    def ScreenToClient(self, hwnd, ref):
+        ref._obj.x -= 100
+        ref._obj.y -= 50
+        return 1
+
+    def PostMessageW(self, hwnd, msg, wp, lp):
+        self.events.append((time.perf_counter(), "post", msg, wp, (lp & 0xFFFF, lp >> 16), hwnd))
+        return 1 if self.posted else 0
+
+
+def test_postmessage_api_posts_the_right_button_to_the_window_under_the_cursor(monkeypatch):
+    m = winput.Win32Mouse(right_hover_s=0, right_press_s=0.05, right_api="postmessage")
+    m._u = PostUser32()
+    m.right_click(612, 450)
+    posts = [e for e in m._u.events if e[1] == "post"]
+    assert [(e[2], e[3]) for e in posts] == [(winput.WM_MOUSEMOVE, 0), (winput.WM_RBUTTONDOWN, winput.MK_RBUTTON),
+                                             (winput.WM_RBUTTONUP, 0)]
+    assert {e[4] for e in posts} == {(512, 400)} and {e[5] for e in posts} == {0x1234}  # client coordinates
+    assert posts[2][0] - posts[1][0] >= 0.05 - 0.005
+    assert not m._u.inputs()  # no device input for the right button
+    assert [e for e in m._u.events if e[1] == "pos"][-1][2:] == (612, 450)  # the cursor is still placed
+
+
+def test_blocked_postmessage_raises_input_blocked():
+    m = winput.Win32Mouse(right_hover_s=0, right_api="postmessage")
+    m._u = PostUser32(posted=False)
+    with pytest.raises(winput.InputBlocked):
+        m.right_click(612, 450)

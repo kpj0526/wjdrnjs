@@ -44,6 +44,9 @@ If the game ignores the right click, raise "Right button press time" (default 0.
 Right click test: press "Test right click (3 s)", click the game's title bar, rest the mouse on
 a selected mob. One right click is sent; the log says whether the target panel appeared.
 Try it with "Right click input API" = sendinput and = mouse_event.
+No right click at all? The log says why: "[DRY RUN: not sent]" (untick DRY RUN),
+"right_click_target=park" (set "Right click at" to same), "nameplate check never passed",
+"lost focus before the right click".
 
 If the game runs as administrator, run this tool as administrator too, or Windows
 blocks its clicks (the log then says "SendInput was blocked").

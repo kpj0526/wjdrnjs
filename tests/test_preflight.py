@@ -41,7 +41,7 @@ def test_all_good_passes_and_reports_every_item():
     r = pf()
     assert r.ok, r.text()
     assert [i.name for i in r.items] == ["mode", "settings", "game window", "DPI", "client size", "capture",
-                                         "candidates", "admin rights"]
+                                         "candidates", "right click", "admin rights"]
     assert "DRY RUN" in r.items[0].message and r.text().startswith("PREFLIGHT PASSED")
 
 

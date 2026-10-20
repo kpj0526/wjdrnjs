@@ -197,13 +197,28 @@ class Bot:
             if res.ok:
                 if not self._sleep(s.right_click_delay):
                     break
+                # the game window may have moved or lost focus during the nameplate check
+                m2, _ = self.mapping_fn()
+                if (m2.left, m2.top, m2.width, m2.height) != (m.left, m.top, m.width, m.height):
+                    log.warning("game client moved/resized since the cycle started (%d,%d %dx%d -> %d,%d %dx%d); "
+                                "right click re-mapped", m.left, m.top, m.width, m.height,
+                                m2.left, m2.top, m2.width, m2.height)
+                    m, park, (sx, sy) = m2, m2.to_screen(*s.park_point), m2.to_screen(c.x, c.y)
+                if not self._game_ready(m):
+                    log.warning("game window lost focus before the right click; not clicked")
+                    return CycleResult(False, i, c, res, tried, skipped="game window lost focus")
                 target = (sx, sy) if s.right_click_target == "same" else park
+                if not m.contains_screen(*target):
+                    log.error("right-click point screen%s is outside the game client; not clicked", target)
+                    return CycleResult(False, i, c, res, tried, skipped="right-click point outside client")
                 if not self._clickable(m, *target):
                     log.warning("right-click point screen%s is covered by another window; not clicked", target)
                     return CycleResult(False, i, c, res, tried, skipped="right-click point covered")
                 # the cursor is still on the mob (unless parked): the game right clicks what is under it
                 self.mouse.right_click(*target)
-                log.info("selected at ref(%d,%d); right click at screen%s", c.x, c.y, target)
+                where = "on the mob" if s.right_click_target == "same" else "on the PARK POINT (not on the mob)"
+                log.info("selected at ref(%d,%d); right click %s at screen%s%s", c.x, c.y, where, target,
+                         "" if self.live else " [DRY RUN: not sent]")
                 self.last_success = (c.x, c.y)
                 if s.confirm_right_click:
                     self._confirm_right_click(m, target)
@@ -211,6 +226,9 @@ class Bot:
                 return CycleResult(True, i, c, res, tried)
             self._save_shot(after, f"fail{i}")
             baseline = after  # the latest frame is the best baseline for the next attempt
+        if tried:
+            log.info("no right click this cycle: the nameplate check never passed (last: %s)",
+                     res.summary() if res else "not checked")
         return CycleResult(False, len(tried), None, res, tried)
 
     def _confirm_right_click(self, m: Mapping, target: tuple[int, int]) -> bool:
@@ -234,7 +252,8 @@ class Bot:
             log.warning("no target panel after the right click (%s); right clicking again", detail)
             self.mouse.right_click(*target)
         log.warning("right click NOT confirmed: no target panel at the bottom (%s). If the game shows it, "
-                    "raise 'Right button press time' or check 'Target panel rect'", detail)
+                    "raise 'Right button press time' or check 'Target panel rect'%s", detail,
+                    "" if self.live else " [DRY RUN: nothing was sent, so no panel is expected]")
         return False
 
     # --- full run --------------------------------------------------------------
@@ -250,6 +269,14 @@ class Bot:
             return
         log.info("start (%s): wait_interval=%.3fs max_attempts=%d max_cycles=%s", "LIVE" if self.live else "DRY-RUN",
                  s.wait_interval, s.max_attempts, s.max_cycles or "inf")
+        log.info("right click: target=%s api=%s delay=%.3fs hover=%.3fs press=%.3fs confirm=%s retries=%d mouse=%s",
+                 s.right_click_target, s.right_click_api, s.right_click_delay, s.right_click_hover,
+                 s.right_click_press, "on" if s.confirm_right_click else "off", s.right_click_retries,
+                 type(self.mouse).__name__)
+        if not self.live:
+            log.warning("DRY RUN: no click reaches the game (untick 'Dry run' for real clicks)")
+        if s.right_click_target == "park":
+            log.warning("right_click_target=park: the right click lands on the park point, not on the mob")
         watchdog = threading.Thread(target=self._watchdog, daemon=True)
         watchdog.start()
         cycles = failed = 0

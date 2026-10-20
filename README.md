@@ -213,6 +213,20 @@ crash would look like "the process runs but no window".
 | Live mode with neither a hotkey nor the corner failsafe | Rejected by validation. |
 | Template file missing, unreadable, or without white text | Validation error, or a fallback to the box search with a warning. |
 
+## When the right click does nothing
+
+Read `logs\r2helper.log`. Besides `right click confirmed` / `right click NOT confirmed`
+(see the limits section), these lines name the cause:
+
+| Log line | Cause | Fix |
+|---|---|---|
+| `start (DRY-RUN)`, `[DRY RUN: not sent]` | Dry run is on: nothing reaches the game | Untick *DRY RUN* |
+| `right_click_target=park`, `on the PARK POINT` | The right click goes to the empty park point | Set *Right click at* to `same` (preflight warns) |
+| `no right click this cycle: the nameplate check never passed` | No selection was recognised, so no right click was sent | Tune the check on a real screenshot |
+| `game window lost focus before the right click` | Another window came to the front during the check | Keep the game in front |
+| `game client moved/resized ... right click re-mapped` | The game window moved during the check | Informational: the right click follows the window |
+| `right-click point ... covered by another window` | Another window covers the mob | Move the helper/overlay off the game |
+
 ## Files and folders
 
 | | From source | Packaged exe |
@@ -244,7 +258,8 @@ the GUI shows where it is. The release zip ships `settings.example.json` but nev
 - **One cycle** (`engine.py`):
   1. Park the cursor and take a baseline screenshot.
   2. For each candidate: left-click, park, check.
-  3. On success: right-click, park, then wait `wait_interval`.
+  3. On success: read the window position again (a moved window re-maps the point), require
+     the game in front, right-click, confirm (target panel), park, then wait `wait_interval`.
 - **Check** (`vision.py`, about 100 ms):
   1. Look in the ROI plus a margin, skipping HUD and ignore areas.
   2. Keep "white" pixels: bright and colourless, next to a dark outline, new since the

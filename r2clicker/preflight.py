@@ -11,7 +11,7 @@ Checked:
 - one frame can be captured, has the client size and is not blank
 - the candidate points (manual or automatic) map inside the client
 - admin rights: a game running as administrator blocks clicks from a normal process
-- DRY RUN / LIVE state
+- DRY RUN / LIVE state, and that the right click lands on the mob
 """
 from __future__ import annotations
 
@@ -249,7 +249,16 @@ def run_preflight(
     else:
         r.add("candidates", OK, f"{len(cands)} {kind}; first {min(len(cands), s.max_attempts)} tried per cycle")
 
-    # 7. administrator rights
+    # 7. where the right click lands
+    if s.right_click_target == "park":
+        r.add("right click", WARN, "'Right click at' is 'park': the right click lands on the empty park point, "
+                                   "not on the selected mob. Set it to 'same' to right-click the mob")
+    else:
+        r.add("right click", OK, f"on the selected mob via {s.right_click_api}, hover {s.right_click_hover:.2f}s, "
+                                 f"hold {s.right_click_press:.2f}s"
+                                 f"{', confirmed by the target panel' if s.confirm_right_click else ''}")
+
+    # 8. administrator rights
     me, game = me_elevated(), game_elevated(m.hwnd) if m.hwnd else None
     if not m.hwnd:
         r.add("admin rights", INFO, "not checked (no game window)")

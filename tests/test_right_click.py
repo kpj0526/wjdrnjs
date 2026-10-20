@@ -85,7 +85,7 @@ def test_failed_cycle_says_why_there_was_no_right_click(base_img, logs):
 def test_run_logs_the_right_click_setup_and_dry_run(base_img, logs):
     make_bot(FakeGame(base_img), fast_settings(max_cycles=1)).run()
     text = logs()
-    assert "right click: target=same api=sendinput" in text and "confirm=off" in text
+    assert "right click: target=same api=mouse_event" in text and "confirm=off" in text
     assert "DRY RUN: no click reaches the game" in text
 
 

@@ -10,8 +10,6 @@ MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
-MOUSEEVENTF_ABSOLUTE = 0x8000
-MOUSEEVENTF_VIRTUALDESK = 0x4000
 BUTTON_APIS = ("sendinput", "mouse_event")  # mouse_event: the older API (what a PowerShell test uses)
 
 
@@ -61,24 +59,22 @@ if sys.platform == "win32":
         _fields_ = [("type", wintypes.DWORD), ("u", _U)]
 
 
-SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 76, 77, 78, 79
-GLIDE_STEPS = 4  # SendInput moves on the way to the right-click target
-
-
 class Win32Mouse:
-    """Real input. Moves with SetCursorPos, then sends button down/up via SendInput.
+    """Real input. Moves with SetCursorPos only, then sends button down/up.
 
-    The left button is pressed for press_s (30 ms), the right button for right_press_s
-    (default 0.15 s, adjustable: some games only notice a right press that lasts a few frames).
-    The right click first glides back onto the target with real SendInput mouse moves when the
-    cursor is elsewhere (it was parked after the left click; some games only update what is
-    under the cursor from mouse-move input, not from SetCursorPos) and rests right_hover_s.
+    The cursor is never moved with SendInput: an absolute SendInput move reaches the game's raw
+    mouse input as a jump to 0..65535 coordinates, and R2 then loses what is under the cursor and
+    ignores the right click (the left click, placed with SetCursorPos only, always worked; so did
+    a PowerShell mouse_event right click with no move at all).
+    The left button is pressed for press_s (30 ms) via SendInput. The right click rests
+    right_hover_s on the target, then presses for right_press_s via right_api (default
+    mouse_event, the API of the PowerShell test that the game took).
     """
 
     live = True
 
     def __init__(self, press_s: float = 0.03, right_hover_s: float = 0.03, right_press_s: float = 0.15,
-                 right_api: str = "sendinput") -> None:
+                 right_api: str = "mouse_event") -> None:
         if sys.platform != "win32":
             raise RuntimeError("live input is only supported on Windows")
         if right_api not in BUTTON_APIS:
@@ -108,25 +104,6 @@ class Win32Mouse:
         finally:
             send(up)  # never leave a button held down
 
-    def _input_move(self, x: int, y: int) -> None:
-        """One absolute SendInput mouse move to screen pixel (x, y) on the virtual desktop."""
-        m = self._u.GetSystemMetrics
-        vx, vy = m(SM_XVIRTUALSCREEN), m(SM_YVIRTUALSCREEN)
-        vw, vh = max(2, m(SM_CXVIRTUALSCREEN)), max(2, m(SM_CYVIRTUALSCREEN))
-        dx = round((x - vx) * 65535 / (vw - 1))
-        dy = round((y - vy) * 65535 / (vh - 1))
-        if not self._send(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, dx, dy):
-            raise InputBlocked("SendInput was blocked; if the game runs as administrator, run this tool as administrator too")
-
-    def glide(self, x: int, y: int) -> None:
-        """Move onto (x, y) with SendInput mouse moves, then pin the exact pixel with SetCursorPos."""
-        start = cursor_pos() or (x, y)
-        for i in range(1, GLIDE_STEPS + 1):
-            self._input_move(round(start[0] + (x - start[0]) * i / GLIDE_STEPS),
-                             round(start[1] + (y - start[1]) * i / GLIDE_STEPS))
-            time.sleep(0.005)
-        self.move(x, y)
-
     def release(self) -> None:
         """Send button-up for both buttons (recovery after an error or stop)."""
         self._send(MOUSEEVENTF_LEFTUP)
@@ -142,13 +119,7 @@ class Win32Mouse:
         self._buttons(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
 
     def right_click(self, x: int, y: int) -> None:
-        if cursor_pos() != (x, y):
-            self.glide(x, y)
-        else:  # already there: a 1 px move and back, so the game sees real mouse input on the mob
-            self._input_move(x + 1, y)
-            time.sleep(0.005)
-            self._input_move(x, y)
-            self.move(x, y)
+        self.move(x, y)  # like the left click: SetCursorPos only, never a SendInput move
         if self.right_hover_s > 0:
             time.sleep(self.right_hover_s)  # let the game see the cursor on the mob before clicking
         self._buttons(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, self.right_press_s, self.right_api)

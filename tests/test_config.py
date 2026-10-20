@@ -149,3 +149,12 @@ def test_guessed_check_values_from_older_files_get_the_calibrated_defaults(tmp_p
     s = Settings.load(p)
     assert (s.verify_mode, s.plate_min_white, s.plate_max_distance) == ("absolute", 150, 250)
     assert s.marker_min_green == 30 and s.wait_interval == 2.0  # everything else is kept
+
+
+@pytest.mark.parametrize("version, api", [(6, "mouse_event"), (7, "sendinput")])
+def test_the_old_saved_sendinput_default_becomes_mouse_event(tmp_path, version, api):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"settings_version": version, "right_click_api": "sendinput",
+                             "right_click_press": 0.3}), encoding="utf-8")
+    s = Settings.load(p)
+    assert s.right_click_api == api and s.right_click_press == 0.3  # a 7 file's choice is kept

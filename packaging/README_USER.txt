@@ -38,12 +38,13 @@ bar, near the clicked point), then right clicks it at once, and checks that the 
 panel (mob name at the bottom centre) appeared; if not, it right clicks once more.
 The log says "right click confirmed" or "right click NOT confirmed".
 The mouse stays on the mob from the left click to the right click (the game only takes the
-right click on the mob under the cursor).
+right click on the mob under the cursor). The cursor is placed like the left click, with no
+extra mouse-move input (from 0.4.4: that move input made the game ignore the right click).
 If the game ignores the right click, raise "Right button press time" (default 0.15, e.g. 0.3).
 
 Right click test: press "Test right click (3 s)", click the game's title bar, rest the mouse on
 a selected mob. One right click is sent; the log says whether the target panel appeared.
-Try it with "Right click input API" = sendinput and = mouse_event.
+"Right click input API" is mouse_event by default (sendinput is the alternative).
 No right click at all? The log says why: "[DRY RUN: not sent]" (untick DRY RUN),
 "right_click_target=park" (set "Right click at" to same), "nameplate check never passed",
 "lost focus before the right click".

@@ -102,7 +102,7 @@ problem and does nothing, and the previous valid settings stay in effect.
    | Check nameplate after left click | `verify_delay` | First check this long after each left click. |
    | Give up nameplate check after | `verify_timeout` | Keep re-checking until this long after the click. |
    | Delay before right click | `right_click_delay` | Between a successful check and the right click (default 0: at once). |
-   | Rest on target before right click | `right_click_hover` | The cursor was parked after the left click; the right click glides back onto the point with real mouse-move input and rests this long first (default 0.03). |
+   | Rest on target before right click | `right_click_hover` | The cursor is placed on the point with SetCursorPos (like the left click) and rests this long before the right press (default 0.1). |
 
    | Right button press time | `right_click_press` | How long the right button is held down (default 0.15; the left button 0.03). Raise it if the game ignores the right click. |
 
@@ -366,13 +366,20 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
   green bar does not count; this has not been checked against a real corpse screenshot.
 - **The cursor stays on the mob** from the left click to the right click (customer log: with the
   cursor moved away while checking and brought back for the right click, R2 ignored two right
-  clicks in a row, while a right click with the cursor resting on the mob worked). Before the
-  right press the cursor is nudged 1 px and back with real mouse input and rests
-  *Rest on target before right click* (0.1 s). *Move cursor away while checking* restores the
-  old behaviour.
+  clicks in a row, while a right click with the cursor resting on the mob worked). It rests
+  *Rest on target before right click* (0.1 s) before the right press. *Move cursor away while
+  checking* restores the old behaviour.
+- **No SendInput mouse moves (0.4.4).** Up to 0.4.3 the right click moved the cursor with
+  absolute SendInput moves (a glide back, then a 1 px nudge). In raw mouse input these arrive
+  as a jump to 0..65535 coordinates, and R2 ignored every such right click (customer logs:
+  check OK, two right clicks, no target panel). The left click, placed with SetCursorPos only,
+  always worked, and so did a PowerShell `mouse_event` right click with no move at all. Now the
+  right click is placed exactly like the left click and the right button goes through
+  `mouse_event` by default (*Right click input API*; settings files from before 0.4.4 get the
+  new default).
 - **Test right click (3 s)** sends one real right click where the mouse is 3 s later (no cursor
-  movement), with *Right click input API* (`sendinput` or the older `mouse_event`, which a
-  PowerShell test uses) and *Right button press time*, then logs whether the target panel appeared.
+  movement), with *Right click input API* (`mouse_event`, the default and what a PowerShell test uses,
+  or `sendinput`) and *Right button press time*, then logs whether the target panel appeared.
 - **Right click confirmation:** a right click that registers shows the target panel at the
   bottom centre (dark box, mob name, green HP dots). After the right click the tool looks for
   it for *Wait for target panel* seconds and right clicks again (*Right click again if no

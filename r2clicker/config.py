@@ -14,9 +14,10 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 REF_W, REF_H = 1600, 900
-SETTINGS_VERSION = 6  # 2: hide_helper_from_capture is an explicit opt-in (default off)
+SETTINGS_VERSION = 7  # 2: hide_helper_from_capture is an explicit opt-in (default off)
                       # 5: right click right after a successful check (0.2.x files: auto clicker)
                       # 6: nameplate check calibrated on real R2 screenshots
+                      # 7: right button via mouse_event (sendinput was the saved default)
 
 Rect = tuple[int, int, int, int]  # x1, y1, x2, y2 (x2/y2 exclusive)
 Point = tuple[int, int]
@@ -75,7 +76,7 @@ class Settings:
     dry_run: bool = True
     park_point: tuple[int, int] = (1480, 300)  # cursor rest point (empty floor, off ROI)
     right_click_target: str = "same"  # same | park  (where the right click lands)
-    right_click_api: str = "sendinput"  # sendinput | mouse_event (older API) for the right button
+    right_click_api: str = "mouse_event"  # sendinput | mouse_event (older API) for the right button
     park_during_check: bool = False   # move the cursor to the park point while checking the nameplate.
                                       # Off: it stays on the mob, which R2 needs for the right click
 
@@ -168,6 +169,8 @@ class Settings:
         skip = {"right_click_delay", "right_click_hover"} if version < 5 else set()
         if version < 6:  # guessed before real screenshots: the calibrated defaults apply
             skip |= {"verify_mode", "plate_min_white", "plate_max_distance"}
+        if version < 7:  # the saved "sendinput" was the old default, not a choice
+            skip.add("right_click_api")
         for f in fields(cls):
             if f.name not in data or f.name in _INTERNAL or f.name in skip:
                 continue

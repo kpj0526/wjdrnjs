@@ -618,7 +618,7 @@ def test_live_start_brings_the_game_window_to_the_front(app, monkeypatch, dry, a
 
 
 @pytest.mark.parametrize("panel, level", [(True, "INFO"), (False, "WARNING")])
-def test_test_right_click_button(app, monkeypatch, caplog, panel, level):
+def test_test_right_click_button(app, monkeypatch, caplog, tmp_path, panel, level):
     import numpy as np
 
     from r2clicker import gui
@@ -640,6 +640,7 @@ def test_test_right_click_button(app, monkeypatch, caplog, panel, level):
     monkeypatch.setattr(gui, "target_panel_shown", lambda img, s, m: (panel, "detail"))
     later = []
     monkeypatch.setattr(app.root, "after", lambda ms, fn=None: later.append(fn))
+    monkeypatch.setattr(gui, "resolve_in_data_dir", lambda p: tmp_path)
     app.vars["right_click_api"][0].set("mouse_event")
     with caplog.at_level("INFO", logger="r2clicker"):
         app.test_right_click()
@@ -647,7 +648,14 @@ def test_test_right_click_button(app, monkeypatch, caplog, panel, level):
         later.pop(0)()   # then the panel check
     assert sent == [{"right_hover_s": 0, "right_press_s": 0.15, "right_api": "mouse_event"}, "click"]
     rec = [r for r in caplog.records if "TEST: " in r.getMessage() and "panel" in r.getMessage()]
-    assert rec and rec[-1].levelname == level
+    assert rec and rec[-1].levelname == level and "client=1600x900" in rec[-1].getMessage()
+    shots = list((tmp_path / "shots").glob("*_test_right_click.png"))
+    assert len(shots) == 1  # what the test saw, with the checked area outlined
+    from PIL import Image
+    px = np.array(Image.open(shots[0]))
+    from r2clicker.config import Settings
+    x1, y1, _, _ = Settings().target_panel_rect
+    assert tuple(px[y1, x1 + 5]) == (255, 0, 0)
 
 
 def test_test_right_click_cancelled_sends_nothing(app, monkeypatch):

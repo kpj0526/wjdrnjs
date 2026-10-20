@@ -369,17 +369,19 @@ timestamps vary. The inputs are pinned so that rebuilds are functionally identic
   clicks in a row, while a right click with the cursor resting on the mob worked). It rests
   *Rest on target before right click* (0.1 s) before the right press. *Move cursor away while
   checking* restores the old behaviour.
-- **No SendInput mouse moves (0.4.4).** Up to 0.4.3 the right click moved the cursor with
-  absolute SendInput moves (a glide back, then a 1 px nudge). In raw mouse input these arrive
-  as a jump to 0..65535 coordinates, and R2 ignored every such right click (customer logs:
-  check OK, two right clicks, no target panel). The left click, placed with SetCursorPos only,
-  always worked, and so did a PowerShell `mouse_event` right click with no move at all. Now the
-  right click is placed exactly like the left click and the right button goes through
-  `mouse_event` by default (*Right click input API*; settings files from before 0.4.4 get the
-  new default).
+- **No SendInput mouse moves (0.4.4), mouse_event by default.** Up to 0.4.3 the right click
+  moved the cursor with absolute SendInput moves (a glide back, then a 1 px nudge); now it is
+  placed exactly like the left click (SetCursorPos only). The right button goes through
+  `mouse_event` by default, the API of a PowerShell right click that R2 took (settings files
+  from before 0.4.4 get the new default). The cause is **not confirmed**: a 0.4.3 *Test right
+  click* (SendInput button, no move at all) also showed no target panel, so either the button
+  API matters or the panel is not where *Target panel rect* looks on that screen. The test
+  screenshot (0.4.5) tells which.
 - **Test right click (3 s)** sends one real right click where the mouse is 3 s later (no cursor
   movement), with *Right click input API* (`mouse_event`, the default and what a PowerShell test uses,
   or `sendinput`) and *Right button press time*, then logs whether the target panel appeared.
+  It saves what it captured to `logs/shots/*_test_right_click.png` with the checked area
+  outlined in red, and logs the game client size.
 - **Right click confirmation:** a right click that registers shows the target panel at the
   bottom centre (dark box, mob name, green HP dots). After the right click the tool looks for
   it for *Wait for target panel* seconds and right clicks again (*Right click again if no

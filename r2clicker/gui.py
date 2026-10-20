@@ -8,6 +8,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from dataclasses import fields, replace
 from pathlib import Path
@@ -722,15 +723,37 @@ class App:
     def _check_test_panel(self, s: Settings):
         try:
             m, _ = resolve_mapping(s.window_title, s.ref_w, s.ref_h)
-            shown, detail = target_panel_shown(self.grabber.grab(m), s, m)
+            img = self.grabber.grab(m)
+            shown, detail = target_panel_shown(img, s, m)
         except (WindowNotFound, CaptureError) as e:
             log.warning("TEST: could not look for the target panel: %s", e)
             return
+        detail += f" client={m.width}x{m.height}"
+        shot = self._save_test_shot(img, s, m)
+        if shot:
+            log.info("TEST: screenshot with the checked area in red: %s", shot)
         if shown:
             log.info("TEST: target panel shown (%s): the game took this right click", detail)
         else:
             log.warning("TEST: NO target panel (%s): the game ignored this right click (or the mouse "
                         "was not on a mob)", detail)
+
+    def _save_test_shot(self, img, s: Settings, m: Mapping):
+        """What the test saw, with the target panel rect outlined, so a screenshot settles whether
+        the game ignored the click or the panel is elsewhere on this screen."""
+        try:
+            from PIL import ImageDraw
+
+            d = resolve_in_data_dir(s.log_dir) / "shots"
+            d.mkdir(parents=True, exist_ok=True)
+            pic = Image.fromarray(np.ascontiguousarray(img[:, :, :3]))
+            ImageDraw.Draw(pic).rectangle(m.rect_to_client(s.target_panel_rect), outline=(255, 0, 0), width=2)
+            path = d / f"{time.strftime('%Y%m%d-%H%M%S')}_test_right_click.png"
+            pic.save(path)
+            return path
+        except Exception as e:  # a full disk must not break the test
+            log.warning("TEST: could not save the screenshot: %s", e)
+            return None
 
     def preflight_check(self):
         s = self._commit_form()

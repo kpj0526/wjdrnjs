@@ -44,6 +44,8 @@ If the game ignores the right click, raise "Right button press time" (default 0.
 
 Right click test: press "Test right click (3 s)", click the game's title bar, rest the mouse on
 a selected mob. One right click is sent; the log says whether the target panel appeared.
+It also saves a screenshot (logs\shots\..._test_right_click.png) with the checked area
+in red: send that picture if the result is unclear.
 "Right click input API" is mouse_event by default (sendinput is the alternative).
 No right click at all? The log says why: "[DRY RUN: not sent]" (untick DRY RUN),
 "right_click_target=park" (set "Right click at" to same), "nameplate check never passed",

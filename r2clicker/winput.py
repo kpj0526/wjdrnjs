@@ -62,10 +62,9 @@ if sys.platform == "win32":
 class Win32Mouse:
     """Real input. Moves with SetCursorPos only, then sends button down/up.
 
-    The cursor is never moved with SendInput: an absolute SendInput move reaches the game's raw
-    mouse input as a jump to 0..65535 coordinates, and R2 then loses what is under the cursor and
-    ignores the right click (the left click, placed with SetCursorPos only, always worked; so did
-    a PowerShell mouse_event right click with no move at all).
+    The cursor is never moved with SendInput (an absolute SendInput move reaches raw mouse input
+    as a jump to 0..65535 coordinates); the right click is placed like the left click, which R2
+    always took. A PowerShell mouse_event right click with no move also worked.
     The left button is pressed for press_s (30 ms) via SendInput. The right click rests
     right_hover_s on the target, then presses for right_press_s via right_api (default
     mouse_event, the API of the PowerShell test that the game took).
